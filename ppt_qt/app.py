@@ -1,9 +1,10 @@
 """PptQtApp: composition root. Wires ppt_core + ppt_qt."""
 from __future__ import annotations
 import os
+import subprocess
 import sys
 import json
-from PySide6.QtWidgets import QApplication, QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QStackedWidget, QSystemTrayIcon, QMenu
+from PySide6.QtWidgets import QApplication, QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QStackedWidget, QSystemTrayIcon, QMenu, QMessageBox
 from PySide6.QtCore import Qt, QSize
 from PySide6.QtGui import QAction, QIcon, QPainter, QColor, QPixmap
 
@@ -12,14 +13,16 @@ from ppt_core.room import load_or_create_room_id
 from ppt_core.command_dispatcher import CommandDispatcher
 from ppt_core.mouse_controller import MouseController
 from ppt_core.ppt_executor import PptExecutor
+from ppt_core.ppt_notes import PptNotesWorker
 from ppt_core.downloads import DownloadManager
 from ppt_core.ws_client import WsClient
 from ppt_core.gesture_bridge import GestureBridge
-from ppt_qt.theme import GLOBAL_QSS, paint_sunset_background
+from ppt_qt.theme import GLOBAL_QSS
 from ppt_qt.widgets import Sidebar, StatusPill, GlassCard, PrimaryButton, SecondaryButton, BackgroundWidget
 from ppt_qt.overlays.spotlight import SpotlightOverlay
 from ppt_qt.overlays.timer_overlay import TimerOverlay
 from ppt_qt.pages import ConnectPage, BehaviorPage, TransfersPage, GesturePage
+from ppt_qt.bridge import QtBridge
 
 SERVER_BASE = "https://ppt.dilikes.com"
 PPT_PC_WS_SUBPATH = "ws/python"
@@ -29,11 +32,16 @@ class PptQtApp:
     def __init__(self):
         self._settings = load_settings()
         self._room_id = load_or_create_room_id()
+
+        # Bridge: workers / asyncio thread ``emit`` on these Signals; Qt
+        # auto-delivers them on the main thread via QueuedConnection.
+        self._qt = QtBridge()
+
         self._mouse = MouseController()
-        self._ppt = PptExecutor()
+        self._ppt = PptExecutor(on_screenshot=self._on_screenshot)
         self._dispatcher = CommandDispatcher(
             self._mouse, self._ppt,
-            on_download=self._on_file_arrived,
+            on_download=lambda url: self._qt.emit_file_arrived(url),
             on_spotlight=self._on_spotlight,
             on_timer_overlay=self._on_timer_overlay,
             on_minimize=self._on_window_minimize,
@@ -42,18 +50,40 @@ class PptQtApp:
         )
         self._downloads = DownloadManager(
             base_url=SERVER_BASE, save_dir="./ppt_files/",
-            on_record_added=self._on_record_added,
+            on_record_added=lambda rec: self._qt.emit_record_added(rec),
+            on_ppt_open=self._on_ppt_downloaded,
         )
-        self._bridge = GestureBridge(
-            dispatcher=self._dispatcher,
-            on_status=self._on_gesture_status,
-            on_fps=self._on_gesture_fps,
-            on_send_text=self._on_gesture_send_text,
-        )
+
+        # Build the QApplication + main window BEFORE connecting bridge signals
+        # so that ``self._win`` is valid when slots fire.
         self._app = QApplication.instance() or QApplication(sys.argv)
         self._app.setStyleSheet(GLOBAL_QSS)
         self._build_main_window()
         self._ws = None
+
+        # Connect bridge signals to GUI-thread slots.
+        self._qt.ws_status.connect(self._on_ws_status)
+        self._qt.ws_connected.connect(self._on_ws_connected)
+        self._qt.ws_disconnected.connect(self._on_ws_disconnected)
+        self._qt.ws_fatal_disconnect.connect(self._on_ws_fatal)
+        self._qt.file_arrived.connect(self._on_file_arrived)
+        self._qt.record_added.connect(self._on_record_added)
+        self._qt.notes_send.connect(self._on_notes_send)
+
+        self._bridge = GestureBridge(
+            dispatcher=self._dispatcher,
+            on_status=lambda text: self._gesture_page.set_status(text),
+            on_fps=lambda fps: self._gesture_page.set_fps(fps),
+            on_send_text=self._on_gesture_send_text,
+        )
+
+        # PPT notes COM worker (independent thread, no Qt dependency).
+        self._notes = PptNotesWorker(
+            send_fn=lambda payload: self._qt.emit_notes_send(payload),
+            get_settings=lambda: self._settings,
+        )
+        self._notes.start()
+
         self._setup_tray()
 
     def _build_main_window(self):
@@ -121,28 +151,77 @@ class PptQtApp:
             self._ws = WsClient(
                 base_url=SERVER_BASE, sub_path=PPT_PC_WS_SUBPATH, room_id=self._room_id,
                 on_message=lambda d: self._dispatcher.dispatch(d),
-                on_status=self._on_ws_status,
-                on_connected=lambda: (self._status_pill.set_ok(True), self._status_pill.set_status("已连接 · 等待手机端指令")),
-                on_disconnected=lambda: (self._status_pill.set_ok(False), self._status_pill.set_status("已断开")),
+                on_status=lambda t: self._qt.emit_ws_status(t),
+                on_connected=lambda: self._qt.emit_ws_connected(),
+                on_disconnected=lambda err: self._qt.emit_ws_disconnected(err),
+                on_fatal_disconnect=lambda err, n: self._qt.emit_ws_fatal(err, n),
             )
             self._ws.start()
             self._status_pill.set_status("正在连接服务器…")
             self._status_pill.set_button_text("停止服务")
             self._connect_page.set_running(True)
 
+    # ----- WS / bridge handlers (Qt main thread via QueuedConnection) -----
+
     def _on_ws_status(self, text):
         self._status_pill.set_status(text)
+
+    def _on_ws_connected(self):
+        self._status_pill.set_ok(True)
+        self._status_pill.set_status("已连接 · 等待手机端指令")
+
+    def _on_ws_disconnected(self, _err):
+        self._status_pill.set_ok(False)
+        self._status_pill.set_status("已断开")
+
+    def _on_ws_fatal(self, err, attempts):
+        QMessageBox.warning(
+            self._win,
+            "连接失败",
+            f"{attempts} 次重连失败：{err}\n请检查网络后点击启动服务重试",
+        )
 
     def _on_file_arrived(self, url):
         self._downloads.enqueue(url)
 
-    def _on_record_added(self, rec):
+    def _on_record_added(self, _rec):
         self._transfers_page.set_records(self._downloads.records())
+
+    def _on_screenshot(self, path):
+        if not self._settings.get("screenshot_open_folder", True):
+            return
+        try:
+            subprocess.run(
+                ["explorer", "/select,", os.path.normpath(path)],
+                check=False,
+            )
+        except Exception:
+            pass
+
+    def _on_ppt_downloaded(self, path):
+        if not self._settings.get("transfer_open_ppt", True):
+            return
+        try:
+            os.startfile(path)  # type: ignore[attr-defined]
+        except Exception:
+            pass
+
+    def _on_notes_send(self, payload):
+        if self._ws is None:
+            return
+        try:
+            self._ws.send({**payload, "roomId": self._room_id})
+        except Exception:
+            pass
 
     def _on_settings_changed(self, new_settings):
         self._settings = new_settings
         save_settings(self._settings)
         self._broadcast_settings()
+        try:
+            self._notes.request_refresh()
+        except Exception:
+            pass
 
     def _broadcast_settings(self):
         if self._ws is None:
@@ -157,6 +236,8 @@ class PptQtApp:
         for k in ("screenshot_open_folder","transfer_open_folder","transfer_open_ppt","ppt_notes_enabled"):
             if k in d:
                 self._settings[k] = bool(d[k])
+        if "open_ppt_path" in d:
+            self._settings["open_ppt_path"] = str(d["open_ppt_path"] or "")
         save_settings(self._settings)
         self._behavior_page.reload_from_model()
         self._broadcast_settings()
@@ -203,12 +284,6 @@ class PptQtApp:
     def _on_open_save_dir(self):
         self._downloads.open_folder()
 
-    def _on_gesture_status(self, text):
-        self._gesture_page.set_status(text)
-
-    def _on_gesture_fps(self, fps):
-        self._gesture_page.set_fps(fps)
-
     def _on_gesture_send_text(self):
         from PySide6.QtWidgets import QInputDialog
         text, ok = QInputDialog.getText(self._win, "发文本", "输入要发送到前台的文本：")
@@ -220,6 +295,10 @@ class PptQtApp:
             self._ws.stop()
         try:
             self._bridge.stop()
+        except Exception:
+            pass
+        try:
+            self._notes.stop()
         except Exception:
             pass
         self._win.close()

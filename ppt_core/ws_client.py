@@ -2,9 +2,10 @@
 
 Hosts an ``asyncio`` event loop on a Qt thread so the Qt GUI thread is never
 blocked by WebSocket I/O. All callbacks (``on_message`` / ``on_status`` /
-``on_connected`` / ``on_disconnected``) are invoked from the asyncio thread;
-the Qt wiring layer is responsible for marshalling them onto the GUI thread
-via ``QObject.signals`` or ``QMetaObject.invokeMethod``.
+``on_connected`` / ``on_disconnected`` / ``on_fatal_disconnect``) are invoked
+from the asyncio thread; the Qt wiring layer is responsible for marshalling
+them onto the GUI thread (typically via a :class:`ppt_qt.bridge.QtBridge`
+``Signal``-emitting proxy).
 
 The behavior is ported from ``ppt_pc_client.websocket_client_loop``:
 
@@ -18,6 +19,9 @@ The behavior is ported from ``ppt_pc_client.websocket_client_loop``:
   ``on_message``.
 * Connection failures trigger an exponential-backoff reconnect
   (1, 2, 4, 8, 16 s, capped at 30 s) until ``stop()`` is called.
+* After ``_FATAL_RECONNECT_ATTEMPTS`` consecutive failed reconnect attempts
+  the ``on_fatal_disconnect`` callback is fired so the GUI can surface a
+  blocking dialog instead of silently retrying forever.
 """
 
 from __future__ import annotations
@@ -32,6 +36,11 @@ from PySide6.QtCore import QThread
 # Wire-protocol constants. Keep in sync with ppt_pc_client.
 PC_PROTOCOL_VERSION = 2
 MINI_MIN_REQUIRED_VERSION = 2
+
+# How many consecutive failed reconnect attempts before we escalate to the
+# ``on_fatal_disconnect`` callback. The spec requires a blocking dialog at
+# the 5th failed attempt.
+_FATAL_RECONNECT_ATTEMPTS = 5
 
 
 def _build_url(base_url: str, sub_path: str, room_id: str) -> str:
@@ -60,20 +69,9 @@ class WsClient(QThread):
     loop is created in ``run()`` and torn down on exit. Callbacks are plain
     callables and fire from the websocket thread; thread-safety at the Qt
     boundary is the caller's responsibility.
-
-    Lifecycle::
-
-        ws = WsClient(base_url=..., sub_path=..., room_id=..., ...)
-        ws.start()        # QThread.start -> schedules run()
-        ...
-        ws.send({...})    # safe from any thread
-        ws.stop()         # request clean shutdown
-        ws.wait()         # join (callers usually do this from the GUI thread)
     """
 
     # Backoff schedule for reconnect attempts after a failed connection.
-    # First retry waits 1s; subsequent retries double up to a 16s cap.
-    # Any wait beyond 16s is clamped to 30s as a safety net (the spec).
     _BACKOFF_INITIAL_S = 1.0
     _BACKOFF_FACTOR = 2.0
     _BACKOFF_CAP_S = 16.0
@@ -89,6 +87,7 @@ class WsClient(QThread):
         on_status: Optional[Callable[[str], None]] = None,
         on_connected: Optional[Callable[[], None]] = None,
         on_disconnected: Optional[Callable[[Optional[BaseException]], None]] = None,
+        on_fatal_disconnect: Optional[Callable[[Optional[BaseException], int], None]] = None,
     ) -> None:
         super().__init__()
         self._base_url = base_url
@@ -99,6 +98,7 @@ class WsClient(QThread):
         self._on_status = on_status
         self._on_connected = on_connected
         self._on_disconnected = on_disconnected
+        self._on_fatal_disconnect = on_fatal_disconnect
 
         # Loop / websocket references. Both are only touched from the
         # asyncio thread (``run``) except via ``asyncio.run_coroutine_threadsafe``
@@ -109,6 +109,9 @@ class WsClient(QThread):
         # Set to True to break the reconnect loop. Protected by ``_stop_event``
         # so ``stop()`` is race-free against the asyncio thread.
         self._stop_event = asyncio.Event()
+        # Number of consecutive failed reconnect attempts since the last
+        # successful connection. Reset to 0 on each successful connect.
+        self._reconnect_attempts = 0
 
     # ------------------------------------------------------------------
     # QThread entry point
@@ -130,12 +133,7 @@ class WsClient(QThread):
     # Public API
     # ------------------------------------------------------------------
     def send(self, payload: dict) -> None:
-        """Thread-safe: schedule a JSON-encoded send on the asyncio loop.
-
-        Silently no-ops if the loop is not running yet or if the websocket
-        is currently disconnected. Errors from ``ws.send`` are logged but
-        not re-raised to the caller.
-        """
+        """Thread-safe: schedule a JSON-encoded send on the asyncio loop."""
         loop = self._loop
         ws = self._ws
         if loop is None or ws is None or not loop.is_running():
@@ -150,13 +148,8 @@ class WsClient(QThread):
             pass
 
     def stop(self) -> None:
-        """Request graceful shutdown.
-
-        Schedules ``ws.close()`` on the asyncio loop, then stops the loop.
-        Safe to call from any thread (and safe to call multiple times).
-        """
+        """Request graceful shutdown."""
         loop = self._loop
-        # Signal the reconnect loop first so no new connection is attempted.
         try:
             self._stop_event.set()
         except Exception:
@@ -169,8 +162,6 @@ class WsClient(QThread):
         def _shutdown() -> None:
             if ws is not None:
                 try:
-                    # ``close()`` returns a coroutine on some websockets
-                    # versions; ``wait_closed`` awaits it.
                     result = ws.close()
                     if asyncio.iscoroutine(result):
                         async def _await_close() -> None:
@@ -206,6 +197,8 @@ class WsClient(QThread):
                     max_size=None,
                 ) as ws:
                     self._ws = ws
+                    # Successful connect — reset the failure counter.
+                    self._reconnect_attempts = 0
                     self._notify_status("已连接 · 等待手机端指令")
                     if self._on_connected is not None:
                         try:
@@ -231,6 +224,19 @@ class WsClient(QThread):
             if self._stop_event.is_set():
                 break
 
+            # Increment the consecutive-failure counter and decide whether to
+            # escalate to a fatal-disconnect dialog.
+            self._reconnect_attempts += 1
+            if (
+                self._reconnect_attempts >= _FATAL_RECONNECT_ATTEMPTS
+                and self._on_fatal_disconnect is not None
+            ):
+                try:
+                    self._on_fatal_disconnect(err, self._reconnect_attempts)
+                except Exception:
+                    pass
+                # Keep retrying in the background; the dialog is non-fatal.
+
             wait_s = min(delay, self._BACKOFF_HARD_CAP_S)
             self._notify_status(f"连接断开 · {wait_s:.0f}s 后重试")
             try:
@@ -240,12 +246,7 @@ class WsClient(QThread):
             delay = min(delay * self._BACKOFF_FACTOR, self._BACKOFF_CAP_S)
 
     async def _consume(self, ws) -> Optional[BaseException]:
-        """Read messages from ``ws`` until disconnect or stop.
-
-        Returns the exception that broke the loop, or ``None`` on a clean
-        stop. Parses JSON, performs the MINI_HELLO handshake, and forwards
-        ``LASER`` / ``MOUSE_CLICK`` plus any other command to ``on_message``.
-        """
+        """Read messages from ``ws`` until disconnect or stop."""
         try:
             async for message in ws:
                 if self._stop_event.is_set():
@@ -258,26 +259,17 @@ class WsClient(QThread):
                     self._handle_mini_hello(ws, data)
                     continue
                 if cmd in ("ONLINE", "OFFLINE"):
-                    # Presence wiring is the caller's responsibility; we
-                    # simply skip these frames so the GUI layer does not
-                    # see raw presence events it cannot yet interpret.
                     continue
                 if cmd in ("LASER", "MOUSE_CLICK"):
                     self._dispatch(data)
                     continue
-                # Any other command (including unknown ones) is forwarded.
                 self._dispatch(data)
         except Exception as e:
             return e
         return None
 
     def _handle_mini_hello(self, ws, data: dict) -> None:
-        """Validate the phone-side handshake version.
-
-        If the peer's protocol version is below ``MINI_MIN_REQUIRED_VERSION``
-        we send back a ``VERSION_MISMATCH`` frame so the phone can prompt
-        the user to upgrade.
-        """
+        """Validate the phone-side handshake version."""
         try:
             mini_ver = int(data.get("version") or 0)
         except (TypeError, ValueError):
@@ -290,9 +282,6 @@ class WsClient(QThread):
                 "min_required": MINI_MIN_REQUIRED_VERSION,
             }
             try:
-                # Schedule synchronously via ``send`` (handles thread-safety
-                # and JSON encoding) — but here we are on the asyncio
-                # thread, so we can send directly.
                 asyncio.ensure_future(
                     ws.send(json.dumps(payload, ensure_ascii=False))
                 )
