@@ -320,7 +320,14 @@ class GestureSemantics:
                 tx = smoothing * st.laser_last_xy[0] + (1.0 - smoothing) * tx
                 ty = smoothing * st.laser_last_xy[1] + (1.0 - smoothing) * ty
             st.laser_last_xy = (tx, ty)
-            events.append({"cmd": "LASER", "x": tx, "y": ty, "source": f"gesture:{slot}"})
+            events.append({
+                "type": "gesture",
+                "gesture": gesture,
+                "slot": slot,
+                "x": tx,
+                "y": ty,
+                "source": f"gesture:{slot}",
+            })
         else:
             # 非 pointing_up → 停止激光平滑（下次重新起步）
             st.laser_last_xy = None
@@ -332,21 +339,18 @@ class GestureSemantics:
             (not is_single and slot == "A" and gesture in (self.G_FIST, self.G_PALM)) or
             (not is_single and slot == "B" and gesture in (self.G_THUMBS_UP, self.G_THUMBS_DOWN))
         )
-        if produce_static and gesture != self.G_NONE and gesture != st.last_static_gesture:
+        if produce_static and gesture in (
+            self.G_FIST, self.G_PALM, self.G_POINTING_UP, self.G_THUMBS_UP, self.G_THUMBS_DOWN
+        ) and gesture != st.last_static_gesture:
             cooldown_ms = int(sens.get("gesture_cooldown_ms", 800))
             if now * 1000.0 >= st.static_cooldown_until and cooldown_ms > 0:
-                if gesture == self.G_FIST:
-                    events.append({"cmd": "BLACK_SCREEN", "source": f"gesture:{slot}"})
-                    st.static_cooldown_until = now + cooldown_ms / 1000.0
-                elif gesture == self.G_PALM:
-                    events.append({"cmd": "WHITE_SCREEN", "source": f"gesture:{slot}"})
-                    st.static_cooldown_until = now + cooldown_ms / 1000.0
-                elif gesture == self.G_THUMBS_UP:
-                    events.append({"cmd": "FULL_SCREEN", "source": f"gesture:{slot}"})
-                    st.static_cooldown_until = now + cooldown_ms / 1000.0
-                elif gesture == self.G_THUMBS_DOWN:
-                    events.append({"cmd": "EXIT", "source": f"gesture:{slot}"})
-                    st.static_cooldown_until = now + cooldown_ms / 1000.0
+                events.append({
+                    "type": "gesture",
+                    "gesture": gesture,
+                    "slot": slot,
+                    "source": f"gesture:{slot}",
+                })
+                st.static_cooldown_until = now + cooldown_ms / 1000.0
         st.last_static_gesture = gesture
 
         # ----- 3) 张掌持续 → 托掌进轮盘（on_send_text） -----
@@ -419,9 +423,19 @@ class GestureSemantics:
             return
 
         if velocity > 0:
-            events.append({"cmd": "NEXT_PAGE", "source": "gesture:swipe"})
+            events.append({
+                "type": "gesture",
+                "gesture": "SWIPE_RIGHT",
+                "slot": slot,
+                "source": "gesture:swipe",
+            })
         else:
-            events.append({"cmd": "PREV_PAGE", "source": "gesture:swipe"})
+            events.append({
+                "type": "gesture",
+                "gesture": "SWIPE_LEFT",
+                "slot": slot,
+                "source": "gesture:swipe",
+            })
         st.last_swire_at = now
         st.wrist_history.clear()
 
