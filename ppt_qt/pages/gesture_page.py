@@ -1,355 +1,303 @@
-"""Gesture control page: lifecycle buttons + mode/preview/mirror/pairing toggles.
-
-Wraps :class:`ppt_core.gesture_bridge.GestureBridge` and lets the user:
-
-* Start / stop the gesture engine (``bridge.start()`` / ``bridge.stop()``).
-* Toggle ``preview_only`` so the camera preview shows without dispatching commands.
-* Switch between ``single`` (one-operator) and ``dual`` (two-hands collaborative) modes.
-* Mirror the camera frame (``mirror`` flag).
-* Swap A/B role assignment at runtime (``dual_roles_swapped`` → ``bridge.swap_roles``).
-* Begin a fresh dual-hand pairing or reset the current one
-  (``bridge.start_pairing()`` / ``bridge.reset_pairing()``).
-
-Any toggle / radio change writes back to ``bridge.engine.cfg.raw[...]`` and
-calls ``bridge.save()`` so the choice is persisted. The page also exposes
-``set_status(text)`` / ``set_fps(fps)`` so the host can stream live updates
-from the engine's callbacks onto the page.
-"""
+"""Gesture control page: 7-slot binding editor / live trial / control buttons."""
 from __future__ import annotations
 
-from typing import Optional
+import json
+import os
+import time
+from typing import Optional, List, Dict
 
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
-    QButtonGroup,
-    QCheckBox,
-    QHBoxLayout,
-    QLabel,
-    QRadioButton,
-    QSizePolicy,
-    QVBoxLayout,
-    QWidget,
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
+    QComboBox, QCheckBox, QFileDialog, QMessageBox, QSizePolicy, QFrame,
 )
 
-from ppt_qt.widgets.glass_card import GlassCard
-from ppt_qt.widgets.primary_button import PrimaryButton, SecondaryButton
+from pc_gesture.config import GESTURES, ACTIONS, DEFAULT_BINDINGS
+
+# 手势显示：图标 + 中文名
+_GESTURE_META = {
+    "FIST":         ("✊", "握拳"),
+    "PALM":         ("🖐", "张掌"),
+    "POINTING_UP":  ("☝", "食指上"),
+    "THUMBS_UP":    ("👍", "竖拇指"),
+    "THUMBS_DOWN":  ("👎", "拇指向下"),
+    "SWIPE_LEFT":   ("◀", "挥左"),
+    "SWIPE_RIGHT":  ("▶", "挥右"),
+}
+
+# 动作下拉显示
+_ACTION_LABEL = {
+    "NEXT_PAGE":          "下一页",
+    "PREV_PAGE":          "上一页",
+    "FULL_SCREEN":        "从头放映",
+    "FROM_CURRENT":       "从当前放映",
+    "BLACK_SCREEN":       "黑屏",
+    "WHITE_SCREEN":       "白屏",
+    "EXIT":               "退出放映",
+    "SCREENSHOT":         "截屏",
+    "OPEN_PPT":           "启动PPT",
+    "PC_WINDOW_MINIMIZE": "PC端最小化",
+    "PC_WINDOW_RESTORE":  "PC端恢复",
+}
+
+# 反向：label -> action name
+_LABEL_TO_ACTION = {v: k for k, v in _ACTION_LABEL.items()}
+
+# 反向：gesture -> 中文名
+_GESTURE_NAME = {k: v[1] for k, v in _GESTURE_META.items()}
 
 
 class GesturePage(QWidget):
-    """Gesture control panel bound to a :class:`GestureBridge` instance."""
-
-    # Raw config keys — kept here so the page owns its slice of the JSON schema.
-    _KEY_PREVIEW = "preview_only"
-    _KEY_MODE = "operator_mode"
-    _KEY_MIRROR = "mirror"
-    _KEY_SWAP = "dual_roles_swapped"
-
-    def __init__(self, *, bridge, parent: Optional[QWidget] = None) -> None:
+    def __init__(self, *, bridge, on_status=None, parent=None):
         super().__init__(parent)
         self._bridge = bridge
+        self._cfg = bridge.cfg
+        self._on_status = on_status
+        self._history: List[Dict] = []
+        self._current_gesture: Optional[str] = None
 
-        root = QVBoxLayout(self)
-        root.setContentsMargins(24, 24, 24, 24)
-        root.setSpacing(20)
+        # ---- 反查行 ----
+        top = QHBoxLayout()
+        top.setSpacing(8)
+        top.addWidget(QLabel("查找:"))
+        self._query_combo = QComboBox()
+        self._query_combo.addItem("（全部未绑定）", userData=None)
+        for a in ACTIONS:
+            self._query_combo.addItem(_ACTION_LABEL[a], userData=a)
+        self._query_combo.currentIndexChanged.connect(self._refresh_query_hint)
+        top.addWidget(self._query_combo, 1)
+        self._query_hint = QLabel("")
+        self._query_hint.setStyleSheet("color:rgba(255,255,255,180);font-size:11px;")
+        top.addWidget(self._query_hint, 2)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(20, 20, 20, 20)
+        outer.setSpacing(12)
+        outer.addLayout(top)
 
-        # ---- Header card -------------------------------------------------
-        header = GlassCard(self)
-        header.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
-        hc = QVBoxLayout(header)
-        hc.setContentsMargins(28, 24, 28, 24)
-        hc.setSpacing(6)
+        # ---- 段 1 7 行映射 ----
+        map_card = QFrame()
+        map_card.setObjectName("GlassCard")
+        ml = QVBoxLayout(map_card)
+        ml.setContentsMargins(12, 12, 12, 12)
+        ml.setSpacing(6)
+        title1 = QLabel("① 手势映射")
+        title1.setStyleSheet("color:#ffffff;font-size:13px;font-weight:600;")
+        ml.addWidget(title1)
+        self._binding_combos: Dict[str, QComboBox] = {}
+        for g in GESTURES:
+            row = QHBoxLayout()
+            row.setSpacing(8)
+            ico, name = _GESTURE_META[g]
+            ico_lbl = QLabel(ico)
+            ico_lbl.setFixedWidth(24)
+            ico_lbl.setStyleSheet("font-size:16px;")
+            row.addWidget(ico_lbl, 0, Qt.AlignVCenter)
+            row.addWidget(QLabel(name), 0, Qt.AlignVCenter)
+            row.addStretch(1)
+            cb = QComboBox()
+            cb.addItem("无", userData=None)
+            for a in ACTIONS:
+                cb.addItem(_ACTION_LABEL[a], userData=a)
+            cb.setCurrentIndex(0)
+            self._populate_combo(g, cb)
+            cb.currentIndexChanged.connect(lambda _idx, gg=g: self._on_binding_changed(gg))
+            self._binding_combos[g] = cb
+            row.addWidget(cb, 0, Qt.AlignVCenter)
+            ml.addLayout(row)
+        outer.addWidget(map_card)
 
-        title = QLabel("手势控制", header)
-        title.setStyleSheet("color:#ffffff;font-size:14px;font-weight:600;")
-        hc.addWidget(title)
+        # ---- 段 2 试用面板 ----
+        trial_card = QFrame()
+        trial_card.setObjectName("GlassCard")
+        tl = QVBoxLayout(trial_card)
+        tl.setContentsMargins(12, 12, 12, 12)
+        tl.setSpacing(6)
+        title2 = QLabel("② 实时试用")
+        title2.setStyleSheet("color:#ffffff;font-size:13px;font-weight:600;")
+        tl.addWidget(title2)
+        now = QHBoxLayout()
+        now.setSpacing(12)
+        self._trial_now = QLabel("（未启动）")
+        self._trial_now.setStyleSheet("color:#ff6e7f;font-size:14px;font-weight:600;")
+        now.addWidget(self._trial_now, 0, Qt.AlignVCenter)
+        self._trial_check = QCheckBox("试用模式")
+        self._trial_check.setChecked(False)
+        self._trial_check.toggled.connect(self._on_trial_toggled)
+        now.addWidget(self._trial_check, 0, Qt.AlignVCenter)
+        self._preview_check = QCheckBox("显示预览")
+        self._preview_check.setChecked(bool(self._cfg.raw.get("show_preview_window", True)))
+        self._preview_check.toggled.connect(self._on_preview_toggled)
+        now.addWidget(self._preview_check, 0, Qt.AlignVCenter)
+        now.addStretch(1)
+        tl.addLayout(now)
+        # 历史
+        self._history_lbl = QLabel("（无历史）")
+        self._history_lbl.setStyleSheet("color:rgba(255,255,255,170);font-size:11px;font-family:Consolas,monospace;")
+        self._history_lbl.setWordWrap(True)
+        tl.addWidget(self._history_lbl)
+        outer.addWidget(trial_card)
 
-        hint = QLabel("通过摄像头识别手势来操作幻灯片", header)
-        hint.setStyleSheet("color:rgba(255,255,255,160);font-size:12px;")
-        hc.addWidget(hint)
+        # ---- 段 3 控制 ----
+        ctrl = QHBoxLayout()
+        ctrl.setSpacing(6)
+        b_start = QPushButton("启动手势")
+        b_start.setObjectName("PrimaryButton")
+        b_start.clicked.connect(lambda: bridge.start())
+        ctrl.addWidget(b_start)
+        b_stop = QPushButton("停止")
+        b_stop.setObjectName("SecondaryButton")
+        b_stop.clicked.connect(lambda: bridge.stop())
+        ctrl.addWidget(b_stop)
+        ctrl.addStretch(1)
+        b_default = QPushButton("恢复默认")
+        b_default.setObjectName("SecondaryButton")
+        b_default.clicked.connect(self._on_reset_defaults)
+        ctrl.addWidget(b_default)
+        b_export = QPushButton("导出配置")
+        b_export.setObjectName("SecondaryButton")
+        b_export.clicked.connect(self._on_export)
+        ctrl.addWidget(b_export)
+        b_import = QPushButton("导入配置")
+        b_import.setObjectName("SecondaryButton")
+        b_import.clicked.connect(self._on_import)
+        ctrl.addWidget(b_import)
+        outer.addLayout(ctrl)
 
-        root.addWidget(header)
+        # 状态行
+        self._status_lbl = QLabel("未启动")
+        self._status_lbl.setStyleSheet("color:rgba(255,255,255,180);font-size:11px;")
+        outer.addWidget(self._status_lbl)
 
-        # ---- Mode toggles card ------------------------------------------
-        mode_card = GlassCard(self)
-        mode_card.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
-        mc = QVBoxLayout(mode_card)
-        mc.setContentsMargins(28, 24, 28, 24)
-        mc.setSpacing(10)
+        # 初次刷新反查提示
+        self._refresh_query_hint()
 
-        mode_title = QLabel("识别模式", mode_card)
-        mode_title.setStyleSheet("color:#ffffff;font-size:13px;font-weight:600;")
-        mc.addWidget(mode_title)
+        # 接 engine 回调
+        if bridge.engine is not None:
+            bridge.engine._on_status = lambda t: self._on_bridge_status(t)
+            bridge.engine._on_fps = lambda f: self._on_bridge_fps(f)
+        # 录制识别（写一个内部轮询：从 bridge 的 _history 或 engine._last_gesture 取）
+        self._poll_timer = QTimer(self)
+        self._poll_timer.setInterval(150)
+        self._poll_timer.timeout.connect(self._poll_engine_state)
+        self._poll_timer.start()
 
-        # preview_only
-        self._cb_preview = QCheckBox("仅预览（不触发操作）", mode_card)
-        self._cb_preview.setStyleSheet(
-            "color:#ffffff;font-size:13px;spacing:8px;padding:4px 0;"
-        )
-        mc.addWidget(self._cb_preview)
+    # ----- 私有 -----
+    def _populate_combo(self, gesture: str, cb: QComboBox) -> None:
+        cur = self._cfg.get_binding(gesture)
+        for i in range(cb.count()):
+            if cb.itemData(i) == cur:
+                cb.setCurrentIndex(i)
+                return
 
-        # operator_mode radios (single / dual)
-        radio_row = QHBoxLayout()
-        radio_row.setContentsMargins(0, 0, 0, 0)
-        radio_row.setSpacing(18)
+    def _on_binding_changed(self, gesture: str) -> None:
+        cb = self._binding_combos[gesture]
+        action = cb.currentData()
+        self._cfg.set_binding(gesture, action)
+        self._bridge.save()
+        self._refresh_query_hint()
+        self._status_lbl.setText(f"已更新 {gesture} -> {action or '禁用'}")
 
-        self._rb_single = QRadioButton("单人主控", mode_card)
-        self._rb_dual = QRadioButton("双人协作", mode_card)
-        for rb in (self._rb_single, self._rb_dual):
-            rb.setStyleSheet("color:#ffffff;font-size:13px;spacing:6px;")
-            radio_row.addWidget(rb)
+    def _refresh_query_hint(self) -> None:
+        sel = self._query_combo.currentData()
+        if sel is None:
+            used = {g for g, a in self._cfg.bindings.items() if a}
+            free = [g for g in GESTURES if g not in used]
+            self._query_hint.setText("未绑定: " + ", ".join(f"{_GESTURE_NAME[g]}({g})" for g in free) or "（全部已绑定）")
+        else:
+            bound = [g for g in GESTURES if self._cfg.get_binding(g) == sel]
+            if bound:
+                self._query_hint.setText("绑定该动作: " + ", ".join(f"{_GESTURE_NAME[g]}({g})" for g in bound))
+            else:
+                self._query_hint.setText("无手势绑定该动作")
 
-        self._mode_group = QButtonGroup(self)
-        self._mode_group.setExclusive(True)
-        self._mode_group.addButton(self._rb_single)
-        self._mode_group.addButton(self._rb_dual)
+    def _on_trial_toggled(self, on: bool) -> None:
+        self._bridge._trial_mode = bool(on)
 
-        radio_row.addStretch(1)
-        mc.addLayout(radio_row)
+    def _on_preview_toggled(self, on: bool) -> None:
+        self._cfg.raw["show_preview_window"] = bool(on)
+        self._bridge.save()
+        eng = self._bridge.engine
+        if eng is not None and hasattr(eng, "_show_preview"):
+            eng._show_preview = bool(on)
 
-        # mirror
-        self._cb_mirror = QCheckBox("镜像画面", mode_card)
-        self._cb_mirror.setStyleSheet(
-            "color:#ffffff;font-size:13px;spacing:8px;padding:4px 0;"
-        )
-        mc.addWidget(self._cb_mirror)
+    def _on_reset_defaults(self) -> None:
+        self._cfg.reset_bindings()
+        self._bridge.save()
+        for g, cb in self._binding_combos.items():
+            self._populate_combo(g, cb)
+        self._refresh_query_hint()
+        self._status_lbl.setText("已恢复默认映射")
 
-        # dual_roles_swapped
-        self._cb_swap = QCheckBox("交换 A/B 职责", mode_card)
-        self._cb_swap.setStyleSheet(
-            "color:#ffffff;font-size:13px;spacing:8px;padding:4px 0;"
-        )
-        mc.addWidget(self._cb_swap)
-
-        mc.addStretch(1)
-        root.addWidget(mode_card)
-
-        # ---- Actions card -----------------------------------------------
-        actions_card = GlassCard(self)
-        actions_card.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
-        ac = QVBoxLayout(actions_card)
-        ac.setContentsMargins(28, 24, 28, 24)
-        ac.setSpacing(10)
-
-        actions_title = QLabel("控制", actions_card)
-        actions_title.setStyleSheet("color:#ffffff;font-size:13px;font-weight:600;")
-        ac.addWidget(actions_title)
-
-        engine_row = QHBoxLayout()
-        engine_row.setContentsMargins(0, 0, 0, 0)
-        engine_row.setSpacing(10)
-
-        self._start_btn = PrimaryButton("启动手势", actions_card)
-        engine_row.addWidget(self._start_btn)
-
-        self._stop_btn = SecondaryButton("停止", actions_card)
-        engine_row.addWidget(self._stop_btn)
-        engine_row.addStretch(1)
-
-        ac.addLayout(engine_row)
-
-        pair_row = QHBoxLayout()
-        pair_row.setContentsMargins(0, 0, 0, 0)
-        pair_row.setSpacing(10)
-
-        self._pair_btn = PrimaryButton("开始双人配对", actions_card)
-        pair_row.addWidget(self._pair_btn)
-
-        self._re_pair_btn = SecondaryButton("重新配对", actions_card)
-        pair_row.addWidget(self._re_pair_btn)
-        pair_row.addStretch(1)
-
-        ac.addLayout(pair_row)
-
-        root.addWidget(actions_card)
-
-        # ---- Status card -------------------------------------------------
-        status_card = GlassCard(self)
-        status_card.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        sc = QVBoxLayout(status_card)
-        sc.setContentsMargins(28, 24, 28, 24)
-        sc.setSpacing(8)
-
-        status_title = QLabel("运行状态", status_card)
-        status_title.setStyleSheet("color:#ffffff;font-size:13px;font-weight:600;")
-        sc.addWidget(status_title)
-
-        self._status_label = QLabel("尚未启动", status_card)
-        self._status_label.setStyleSheet("color:rgba(255,255,255,180);font-size:12px;")
-        self._status_label.setWordWrap(True)
-        sc.addWidget(self._status_label)
-
-        fps_row = QHBoxLayout()
-        fps_row.setContentsMargins(0, 0, 0, 0)
-        fps_row.setSpacing(8)
-
-        fps_key = QLabel("FPS：", status_card)
-        fps_key.setStyleSheet("color:rgba(255,255,255,160);font-size:12px;")
-        fps_row.addWidget(fps_key)
-
-        self._fps_label = QLabel("--", status_card)
-        self._fps_label.setStyleSheet(
-            "color:#ffffff;font-size:12px;font-weight:600;"
-        )
-        fps_row.addWidget(self._fps_label)
-        fps_row.addStretch(1)
-
-        sc.addLayout(fps_row)
-        sc.addStretch(1)
-        root.addWidget(status_card, 1)
-
-        # ---- Wire signals -----------------------------------------------
-        self._cb_preview.toggled.connect(self._on_preview_toggled)
-        self._rb_single.toggled.connect(self._on_mode_toggled)
-        self._rb_dual.toggled.connect(self._on_mode_toggled)
-        self._cb_mirror.toggled.connect(self._on_mirror_toggled)
-        self._cb_swap.toggled.connect(self._on_swap_toggled)
-
-        self._start_btn.clicked.connect(self._on_start_clicked)
-        self._stop_btn.clicked.connect(self._on_stop_clicked)
-        self._pair_btn.clicked.connect(self._on_pair_clicked)
-        self._re_pair_btn.clicked.connect(self._on_re_pair_clicked)
-
-        # Populate widget state from the live (or freshly ensured) config.
-        self._reload_from_engine()
-
-    # ------------------------------------------------------------------
-    # Public API
-    # ------------------------------------------------------------------
-
-    def set_status(self, text: str) -> None:
-        """Update the status line (typically called from the engine thread)."""
-        if not text:
+    def _on_export(self) -> None:
+        path, _ = QFileDialog.getSaveFileName(self, "导出配置", "gesture_config.json", "JSON (*.json)")
+        if not path:
             return
-        self._status_label.setText(str(text))
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(self._cfg.raw, f, ensure_ascii=False, indent=2)
+            self._status_lbl.setText(f"已导出到 {os.path.basename(path)}")
+        except Exception as e:
+            QMessageBox.warning(self, "导出失败", str(e))
+
+    def _on_import(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(self, "导入配置", "", "JSON (*.json)")
+        if not path:
+            return
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception as e:
+            QMessageBox.warning(self, "导入失败", f"JSON 解析失败: {e}")
+            return
+        if "bindings" in data and isinstance(data["bindings"], dict):
+            self._cfg.import_dict(data["bindings"])
+            self._bridge.save()
+            for g, cb in self._binding_combos.items():
+                self._populate_combo(g, cb)
+            self._refresh_query_hint()
+            self._status_lbl.setText(f"已导入 {os.path.basename(path)}")
+        else:
+            QMessageBox.warning(self, "导入失败", "JSON 缺少 bindings 字段")
+
+    def _on_bridge_status(self, text: str) -> None:
+        self._status_lbl.setText(text)
+
+    def _on_bridge_fps(self, fps: float) -> None:
+        prev = self._status_lbl.text()
+        if "·" in prev:
+            base = prev.split("·")[0].strip()
+        else:
+            base = prev
+        self._status_lbl.setText(f"{base} · FPS {fps:.1f}")
+
+    def _poll_engine_state(self) -> None:
+        eng = self._bridge.engine
+        if eng is None:
+            return
+        last = getattr(eng, "_last_gesture", None)
+        if last and last != self._current_gesture:
+            self._current_gesture = last
+            self._trial_now.setText(_GESTURE_NAME.get(last, last))
+            action = self._cfg.get_binding(last)
+            self._history.insert(0, {"ts": time.time(), "gesture": last, "action": action})
+            self._history = self._history[:5]
+            lines = []
+            for h in self._history:
+                t = time.strftime("%H:%M:%S", time.localtime(h["ts"]))
+                aname = _ACTION_LABEL.get(h["action"], h["action"] or "无")
+                gname = _GESTURE_NAME.get(h["gesture"], h["gesture"])
+                lines.append(f"{t} {gname} -> {aname}")
+            self._history_lbl.setText("\n".join(lines) or "（无历史）")
+        elif last is None and self._current_gesture is not None:
+            self._current_gesture = None
+            self._trial_now.setText("（未识别）")
+
+    # ----- 公开 API（向后兼容） -----
+    def set_status(self, text: str) -> None:
+        self._on_bridge_status(text)
 
     def set_fps(self, fps: float) -> None:
-        """Update the FPS readout (typically called from the engine thread)."""
-        try:
-            value = float(fps)
-        except (TypeError, ValueError):
-            self._fps_label.setText("--")
-            return
-        if value <= 0.0:
-            self._fps_label.setText("--")
-        else:
-            self._fps_label.setText(f"{value:.1f}")
+        self._on_bridge_fps(fps)
 
-    # ------------------------------------------------------------------
-    # Internal helpers
-    # ------------------------------------------------------------------
-
-    def _ensure_engine(self):
-        """Return the live engine, constructing it via the bridge if needed.
-
-        The bridge lazily allocates ``GestureEngine`` on first use, so any
-        page-side raw-config edit must guarantee it exists. We rely on the
-        bridge's own ``_ensure`` for that — it is the only way to read
-        ``engine.cfg.raw`` without a ``None`` engine.
-        """
-        return self._bridge._ensure()  # noqa: SLF001 — intentional internal use
-
-    def _reload_from_engine(self) -> None:
-        """Sync widget state from ``bridge.engine.cfg.raw``.
-
-        Called once during construction. Any unknown mode value falls back to
-        ``single`` so the page always reflects a valid selection.
-        """
-        eng = self._ensure_engine()
-        raw = eng.cfg.raw
-
-        def _block(callable_):
-            for w in (
-                self._cb_preview,
-                self._rb_single,
-                self._rb_dual,
-                self._cb_mirror,
-                self._cb_swap,
-            ):
-                w.blockSignals(True)
-            try:
-                callable_()
-            finally:
-                for w in (
-                    self._cb_preview,
-                    self._rb_single,
-                    self._rb_dual,
-                    self._cb_mirror,
-                    self._cb_swap,
-                ):
-                    w.blockSignals(False)
-
-        def _apply():
-            self._cb_preview.setChecked(bool(raw.get(self._KEY_PREVIEW, False)))
-            self._cb_mirror.setChecked(bool(raw.get(self._KEY_MIRROR, True)))
-            self._cb_swap.setChecked(bool(raw.get(self._KEY_SWAP, False)))
-
-            mode = str(raw.get(self._KEY_MODE, "single")).strip().lower()
-            if mode == "dual":
-                self._rb_dual.setChecked(True)
-            else:
-                self._rb_single.setChecked(True)
-
-        _block(_apply)
-
-    def _write_raw_and_save(self, key: str, value) -> None:
-        """Write ``bridge.engine.cfg.raw[key] = value`` then ``bridge.save()``."""
-        eng = self._ensure_engine()
-        eng.cfg.raw[key] = value
-        try:
-            self._bridge.save()
-        except Exception:
-            # save() already swallows errors internally; this is just a belt.
-            pass
-
-    # ------------------------------------------------------------------
-    # Slots: widgets → engine
-    # ------------------------------------------------------------------
-
-    def _on_preview_toggled(self, checked: bool) -> None:
-        self._write_raw_and_save(self._KEY_PREVIEW, bool(checked))
-
-    def _on_mode_toggled(self, _checked: bool) -> None:
-        mode = "dual" if self._rb_dual.isChecked() else "single"
-        self._write_raw_and_save(self._KEY_MODE, mode)
-
-    def _on_mirror_toggled(self, checked: bool) -> None:
-        self._write_raw_and_save(self._KEY_MIRROR, bool(checked))
-
-    def _on_swap_toggled(self, checked: bool) -> None:
-        # ``swap_roles`` already persists + reloads semantics — no extra save.
-        try:
-            self._bridge.swap_roles(bool(checked))
-        except Exception:
-            # Don't crash the UI if the bridge can't apply the swap right now.
-            pass
-
-    def _on_start_clicked(self) -> None:
-        try:
-            err = self._bridge.start()
-        except Exception as ex:
-            self.set_status(f"启动失败：{ex}")
-            return
-        if err:
-            self.set_status(f"启动失败：{err}")
-        else:
-            self.set_status("手势识别运行中")
-
-    def _on_stop_clicked(self) -> None:
-        try:
-            self._bridge.stop()
-        except Exception as ex:
-            self.set_status(f"停止失败：{ex}")
-            return
-        self.set_status("已停止")
-        self.set_fps(0.0)
-
-    def _on_pair_clicked(self) -> None:
-        try:
-            self._bridge.start_pairing()
-        except Exception as ex:
-            self.set_status(f"配对失败：{ex}")
-
-    def _on_re_pair_clicked(self) -> None:
-        try:
-            self._bridge.reset_pairing()
-        except Exception as ex:
-            self.set_status(f"重置配对失败：{ex}")
+    def set_trial_history(self, events: List[Dict]) -> None:
+        pass
