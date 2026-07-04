@@ -54,12 +54,27 @@ class PptQtApp:
             on_ppt_open=self._on_ppt_downloaded,
         )
 
-        # Build the QApplication + main window BEFORE connecting bridge signals
-        # so that ``self._win`` is valid when slots fire.
+        # Build the QApplication first; main window construction references
+        # ``self._gesture_page`` which is initialised in ``_build_main_window``.
         self._app = QApplication.instance() or QApplication(sys.argv)
         self._app.setStyleSheet(GLOBAL_QSS)
+
+        # GestureBridge needs ``self._gesture_page`` callbacks, but its public
+        # methods are not called until after ``_build_main_window`` runs.
+        # We construct a placeholder here and patch callbacks below.
+        self._bridge = GestureBridge(
+            dispatcher=self._dispatcher,
+            on_status=lambda text: None,
+            on_fps=lambda fps: None,
+            on_send_text=self._on_gesture_send_text,
+        )
+
         self._build_main_window()
         self._ws = None
+
+        # Now that ``self._gesture_page`` exists, rewire the bridge callbacks.
+        self._bridge._on_status = lambda text: self._gesture_page.set_status(text)
+        self._bridge._on_fps = lambda fps: self._gesture_page.set_fps(fps)
 
         # Connect bridge signals to GUI-thread slots.
         self._qt.ws_status.connect(self._on_ws_status)
@@ -69,13 +84,6 @@ class PptQtApp:
         self._qt.file_arrived.connect(self._on_file_arrived)
         self._qt.record_added.connect(self._on_record_added)
         self._qt.notes_send.connect(self._on_notes_send)
-
-        self._bridge = GestureBridge(
-            dispatcher=self._dispatcher,
-            on_status=lambda text: self._gesture_page.set_status(text),
-            on_fps=lambda fps: self._gesture_page.set_fps(fps),
-            on_send_text=self._on_gesture_send_text,
-        )
 
         # PPT notes COM worker (independent thread, no Qt dependency).
         self._notes = PptNotesWorker(
