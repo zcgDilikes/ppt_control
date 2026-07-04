@@ -100,18 +100,17 @@ class GestureBridge:
         if slot != "A":
             return
         action = self._cfg.get_binding(gesture)
-        if not action:
-            return
-        payload = _action_to_cmd(action, default_open_ppt_path="")
-        if payload:
-            try:
-                self._dispatcher.dispatch(payload)
-            except Exception:
-                pass
+        if action:
+            payload = _action_to_cmd(action, default_open_ppt_path="")
+            if payload:
+                try:
+                    self._dispatcher.dispatch(payload)
+                except Exception:
+                    pass
         # Always emit a recognized-gesture record so UI / trial polling can
-        # observe what the bridge just dispatched (regardless of whether a
-        # binding produced a payload). This keeps the "trial panel" honest:
-        # an unbound gesture is still "recognized" — just no cmd fired.
+        # observe what the bridge just saw (regardless of whether the binding
+        # produced a payload). Unbound gestures are still "recognized" — just
+        # no cmd fired.
         self._record_recognized_gesture(gesture, action, ev, source)
 
     # --------------------------------------------------------------- lifecycle
@@ -134,9 +133,11 @@ class GestureBridge:
         """Persist the bridge-owned config to disk.
 
         The bridge is the source of truth for ``bindings`` (UI mutates
-        ``self._cfg``). When the engine exists we must mirror our bindings
-        into ``engine.cfg`` BEFORE ``save_config`` runs, otherwise the
-        on-disk file won't reflect what the UI just changed.
+        ``self._cfg``). When the engine exists we mirror our bindings into
+        ``engine.cfg`` BEFORE ``engine.save_config()`` runs so the on-disk
+        file reflects UI changes. When the engine has not yet been
+        constructed, we save our own cfg directly so UI mutations made
+        before the user clicks "Start gesture" still persist.
         """
         # Ensure the in-memory cfg's raw view matches our bindings.
         if isinstance(self._cfg.raw, dict):
@@ -151,6 +152,13 @@ class GestureBridge:
             if isinstance(getattr(self._engine.cfg, "raw", None), dict):
                 self._engine.cfg.raw["bindings"] = dict(self._cfg.bindings)
             self._engine.save_config()
+            return
+        # No engine yet — persist the bridge's cfg directly.
+        from pc_gesture.config import save_gesture_config
+        try:
+            save_gesture_config(self._cfg)
+        except Exception:
+            pass
 
     # --------------------------------------------------------------- roles
 
