@@ -9,10 +9,10 @@ from typing import Optional, List, Dict
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QComboBox, QCheckBox, QFileDialog, QMessageBox, QSizePolicy, QFrame,
+    QComboBox, QCheckBox, QFileDialog, QMessageBox, QFrame,
 )
 
-from pc_gesture.config import GESTURES, ACTIONS, DEFAULT_BINDINGS
+from pc_gesture.config import GESTURES, ACTIONS
 
 # 手势显示：图标 + 中文名
 _GESTURE_META = {
@@ -39,9 +39,6 @@ _ACTION_LABEL = {
     "PC_WINDOW_MINIMIZE": "PC端最小化",
     "PC_WINDOW_RESTORE":  "PC端恢复",
 }
-
-# 反向：label -> action name
-_LABEL_TO_ACTION = {v: k for k, v in _ACTION_LABEL.items()}
 
 # 反向：gesture -> 中文名
 _GESTURE_NAME = {k: v[1] for k, v in _GESTURE_META.items()}
@@ -120,10 +117,6 @@ class GesturePage(QWidget):
         self._trial_now = QLabel("（未启动）")
         self._trial_now.setStyleSheet("color:#ff6e7f;font-size:14px;font-weight:600;")
         now.addWidget(self._trial_now, 0, Qt.AlignVCenter)
-        self._trial_check = QCheckBox("试用模式")
-        self._trial_check.setChecked(False)
-        self._trial_check.toggled.connect(self._on_trial_toggled)
-        now.addWidget(self._trial_check, 0, Qt.AlignVCenter)
         self._preview_check = QCheckBox("显示预览")
         self._preview_check.setChecked(bool(self._cfg.raw.get("show_preview_window", True)))
         self._preview_check.toggled.connect(self._on_preview_toggled)
@@ -171,14 +164,29 @@ class GesturePage(QWidget):
         # 初次刷新反查提示
         self._refresh_query_hint()
 
-        # 接 engine 回调
-        if bridge.engine is not None:
-            bridge.engine._on_status = lambda t: self._on_bridge_status(t)
-            bridge.engine._on_fps = lambda f: self._on_bridge_fps(f)
-        # 录制识别（写一个内部轮询：从 bridge 的 _history 或 engine._last_gesture 取）
+        # 接 engine 回调。GestureEngine 接收的 on_status/on_fps 是它在
+        # __init__ 时存进 self._on_status / self._on_fps 的回调；之后
+        # GestureEngine._ensure 再去读这些实例属性。所以 page 必须在
+        # bridge（engine 的 caller）层级打补丁——写 bridge._on_status /
+        # bridge._on_fps。这样即使 engine 还未 lazy 创建，下一次 _ensure
+        # 也会用上新的回调。
+        bridge._on_status = lambda t: self._on_bridge_status(t)
+        bridge._on_fps = lambda f: self._on_bridge_fps(f)
+        # 如果 engine 已经存在（罕见），也同步覆盖一份，免得已经发出的
+        # 旧闭包继续往 page 推。
+        eng_now = bridge.engine
+        if eng_now is not None:
+            eng_now._on_status = bridge._on_status
+            eng_now._on_fps = bridge._on_fps
+
+        # 录制识别：轮询 bridge 的最近识别环形缓冲（_recent_gestures），
+        # 它由 bridge._on_gesture_event 在每次成功识别后写入，无论该手势
+        # 是否绑定了动作。这样 trial 面板能看到"识别了 X 但没派发"
+        # 的情况，而不会因为绑定为 None 而漏掉识别。
+        self._last_seen_ts = 0.0
         self._poll_timer = QTimer(self)
         self._poll_timer.setInterval(150)
-        self._poll_timer.timeout.connect(self._poll_engine_state)
+        self._poll_timer.timeout.connect(self._poll_bridge_gestures)
         self._poll_timer.start()
 
     # ----- 私有 -----
@@ -209,9 +217,6 @@ class GesturePage(QWidget):
                 self._query_hint.setText("绑定该动作: " + ", ".join(f"{_GESTURE_NAME[g]}({g})" for g in bound))
             else:
                 self._query_hint.setText("无手势绑定该动作")
-
-    def _on_trial_toggled(self, on: bool) -> None:
-        self._bridge._trial_mode = bool(on)
 
     def _on_preview_toggled(self, on: bool) -> None:
         self._cfg.raw["show_preview_window"] = bool(on)
@@ -270,27 +275,38 @@ class GesturePage(QWidget):
             base = prev
         self._status_lbl.setText(f"{base} · FPS {fps:.1f}")
 
-    def _poll_engine_state(self) -> None:
-        eng = self._bridge.engine
-        if eng is None:
+    def _poll_bridge_gestures(self) -> None:
+        """Pull new entries from ``bridge.recent_gestures()`` and update the
+        trial panel. The bridge's ring buffer is the source of truth; the
+        page just consumes it at ~150 ms cadence.
+        """
+        recent = self._bridge.recent_gestures() if hasattr(self._bridge, "recent_gestures") else []
+        # Find any entries newer than what we've already shown.
+        new_entries = [r for r in recent if float(r.get("ts") or 0.0) > self._last_seen_ts]
+        if not new_entries:
+            # Reset "current" indicator if nothing new in a while.
+            if self._current_gesture is not None and time.time() - self._last_seen_ts > 2.0:
+                self._current_gesture = None
+                self._trial_now.setText("（未识别）")
             return
-        last = getattr(eng, "_last_gesture", None)
-        if last and last != self._current_gesture:
-            self._current_gesture = last
-            self._trial_now.setText(_GESTURE_NAME.get(last, last))
-            action = self._cfg.get_binding(last)
-            self._history.insert(0, {"ts": time.time(), "gesture": last, "action": action})
+        for entry in new_entries:
+            ts = float(entry.get("ts") or 0.0)
+            gesture = str(entry.get("gesture") or "")
+            action = entry.get("action")
+            if not gesture or gesture == self._current_gesture:
+                continue
+            self._current_gesture = gesture
+            self._trial_now.setText(_GESTURE_NAME.get(gesture, gesture))
+            self._history.insert(0, {"ts": ts or time.time(), "gesture": gesture, "action": action})
             self._history = self._history[:5]
-            lines = []
-            for h in self._history:
-                t = time.strftime("%H:%M:%S", time.localtime(h["ts"]))
-                aname = _ACTION_LABEL.get(h["action"], h["action"] or "无")
-                gname = _GESTURE_NAME.get(h["gesture"], h["gesture"])
-                lines.append(f"{t} {gname} -> {aname}")
-            self._history_lbl.setText("\n".join(lines) or "（无历史）")
-        elif last is None and self._current_gesture is not None:
-            self._current_gesture = None
-            self._trial_now.setText("（未识别）")
+            self._last_seen_ts = max(self._last_seen_ts, ts or time.time())
+        lines = []
+        for h in self._history:
+            t = time.strftime("%H:%M:%S", time.localtime(float(h.get("ts") or 0.0)))
+            aname = _ACTION_LABEL.get(h["action"], h["action"] or "无")
+            gname = _GESTURE_NAME.get(h["gesture"], h["gesture"])
+            lines.append(f"{t} {gname} -> {aname}")
+        self._history_lbl.setText("\n".join(lines) or "（无历史）")
 
     # ----- 公开 API（向后兼容） -----
     def set_status(self, text: str) -> None:
@@ -298,6 +314,3 @@ class GesturePage(QWidget):
 
     def set_fps(self, fps: float) -> None:
         self._on_bridge_fps(fps)
-
-    def set_trial_history(self, events: List[Dict]) -> None:
-        pass
