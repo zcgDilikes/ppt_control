@@ -84,6 +84,7 @@ class PptQtApp:
         self._qt.file_arrived.connect(self._on_file_arrived)
         self._qt.record_added.connect(self._on_record_added)
         self._qt.notes_send.connect(self._on_notes_send)
+        self._qt.mobile_presence.connect(self._on_mobile_presence)
         self._qt.spotlight.connect(self._on_spotlight)
 
         # PPT notes COM worker (independent thread, no Qt dependency).
@@ -164,6 +165,7 @@ class PptQtApp:
                 on_connected=lambda: self._qt.emit_ws_connected(),
                 on_disconnected=lambda err: self._qt.emit_ws_disconnected(err),
                 on_fatal_disconnect=lambda err, n: self._qt.emit_ws_fatal(err, n),
+                on_mobile_presence=lambda online: self._qt.emit_mobile_presence(online),
             )
             self._ws.start()
             self._status_pill.set_status("正在连接服务器…")
@@ -222,6 +224,10 @@ class PptQtApp:
             self._ws.send({**payload, "roomId": self._room_id})
         except Exception:
             pass
+
+    def _on_mobile_presence(self, online: bool) -> None:
+        # Sync the home page mobile pill with phone ONLINE/OFFLINE.
+        self._connect_page.set_mobile_online(bool(online))
 
     def _on_settings_changed(self, new_settings):
         self._settings = new_settings

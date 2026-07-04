@@ -12,9 +12,8 @@ The behavior is ported from ``ppt_pc_client.websocket_client_loop``:
 * URL scheme is derived from ``base_url``: ``https`` -> ``wss``, ``http`` -> ``ws``.
 * ``MINI_HELLO`` performs the version handshake; older peers get a
   ``VERSION_MISMATCH`` reply.
-* ``ONLINE`` / ``OFFLINE`` are observed for parity with the reference but
-  do not drive any UI state yet (presence wiring is the responsibility of
-  the higher layer).
+* ``ONLINE`` / ``OFFLINE`` drive the ``on_mobile_presence(online: bool)``
+  callback so the GUI can flip its home-page mobile-status pill.
 * ``LASER`` / ``MOUSE_CLICK`` and any other command are forwarded to
   ``on_message``.
 * Connection failures trigger an exponential-backoff reconnect
@@ -88,6 +87,7 @@ class WsClient(QThread):
         on_connected: Optional[Callable[[], None]] = None,
         on_disconnected: Optional[Callable[[Optional[BaseException]], None]] = None,
         on_fatal_disconnect: Optional[Callable[[Optional[BaseException], int], None]] = None,
+        on_mobile_presence: Optional[Callable[[bool], None]] = None,
     ) -> None:
         super().__init__()
         self._base_url = base_url
@@ -99,6 +99,7 @@ class WsClient(QThread):
         self._on_connected = on_connected
         self._on_disconnected = on_disconnected
         self._on_fatal_disconnect = on_fatal_disconnect
+        self._on_mobile_presence = on_mobile_presence
 
         # Loop / websocket references. Both are only touched from the
         # asyncio thread (``run``) except via ``asyncio.run_coroutine_threadsafe``
@@ -258,6 +259,11 @@ class WsClient(QThread):
                     self._handle_mini_hello(ws, data)
                     continue
                 if cmd in ("ONLINE", "OFFLINE"):
+                    if self._on_mobile_presence is not None:
+                        try:
+                            self._on_mobile_presence(cmd == "ONLINE")
+                        except Exception:
+                            pass
                     continue
                 if cmd in ("LASER", "MOUSE_CLICK"):
                     self._dispatch(data)
