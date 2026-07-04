@@ -310,6 +310,10 @@ class GestureSemantics:
 
         # ----- 1) 激光（食指上指） -----
         # 单人：仅 A 槽产生激光；双人：B 槽产生激光
+        # NOTE: laser emits a per-frame ``cmd:LASER`` payload so the cursor
+        # follows the fingertip smoothly. The bridge / dispatcher uses
+        # ``cmd`` payloads for laser motion and ``type=gesture`` payloads for
+        # one-shot rising-edge bindings. These two channels are kept distinct.
         produce_laser = (is_single and slot == "A") or (not is_single and slot == "B")
         if produce_laser and gesture == self.G_POINTING_UP:
             tx = float(lm[INDEX_TIP].x)
@@ -320,14 +324,10 @@ class GestureSemantics:
                 tx = smoothing * st.laser_last_xy[0] + (1.0 - smoothing) * tx
                 ty = smoothing * st.laser_last_xy[1] + (1.0 - smoothing) * ty
             st.laser_last_xy = (tx, ty)
-            events.append({
-                "type": "gesture",
-                "gesture": gesture,
-                "slot": slot,
-                "x": tx,
-                "y": ty,
-                "source": f"gesture:{slot}",
-            })
+            # Per-frame cmd payload — kept distinct from the rising-edge
+            # ``type=gesture`` event below so the bridge can route bindings
+            # on transitions only, while laser motion streams every frame.
+            events.append({"cmd": "LASER", "x": tx, "y": ty, "source": f"gesture:{slot}"})
         else:
             # 非 pointing_up → 停止激光平滑（下次重新起步）
             st.laser_last_xy = None
