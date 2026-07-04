@@ -12,10 +12,16 @@ hold a single object that:
 
 from __future__ import annotations
 
-from typing import Callable, Optional
+import time
+from collections import deque
+from typing import Callable, Deque, Dict, Optional
 
 from pc_gesture.config import load_gesture_config
 from pc_gesture.engine import GestureEngine
+
+# Maximum number of recently recognized gestures kept for UI trial polling.
+# 32 is enough for ~5 seconds at 150 ms poll cadence with comfortable slack.
+_RECENT_GESTURE_LIMIT = 32
 
 
 # ---------------------------------------------------------------------------
@@ -49,18 +55,21 @@ class GestureBridge:
         on_status: Callable[[str], None],
         on_fps: Callable[[float], None],
         on_send_text: Callable[[str], None],
-        trial_mode: bool = False,
     ) -> None:
         self._dispatcher = dispatcher
         self._on_status = on_status
         self._on_fps = on_fps
         self._on_send_text = on_send_text
-        self._trial_mode = bool(trial_mode)
         self._engine: Optional[GestureEngine] = None
         # Bridge-owned GestureConfig so UI calls (set_binding / get_binding /
         # reset_bindings) work before any engine.start(). The engine itself
         # also loads the same JSON file when it boots, so values stay in sync.
         self._cfg = load_gesture_config()
+        # Ring buffer of recently recognized gesture events for UI trial
+        # polling. Each entry: {"ts": float, "gesture": str, "action": str|None,
+        # "source": str}. Entries are appended in ``_on_gesture_event`` and
+        # consumed by ``recent_gestures()`` from the Qt thread.
+        self._recent_gestures: Deque[Dict[str, object]] = deque(maxlen=_RECENT_GESTURE_LIMIT)
 
     # --------------------------------------------------------------- internal
 
@@ -74,8 +83,14 @@ class GestureBridge:
             )
         return self._engine
 
-    def _on_gesture_event(self, ev: dict) -> None:
-        """Engine raw gesture event entry: filter + binding lookup + dispatch."""
+    def _on_gesture_event(self, ev: dict, source: str = "gesture") -> None:
+        """Engine raw gesture event entry: filter + binding lookup + dispatch.
+
+        The engine always invokes ``dispatch_fn(event, source)`` (see
+        :meth:`pc_gesture.engine.GestureEngine._safe_dispatch`), so the second
+        positional ``source`` argument must be accepted even though we only
+        use the event payload here.
+        """
         if not isinstance(ev, dict):
             return
         if ev.get("type") != "gesture":
@@ -85,8 +100,6 @@ class GestureBridge:
         if slot != "A":
             return
         action = self._cfg.get_binding(gesture)
-        if not action and not self._trial_mode:
-            return
         if not action:
             return
         payload = _action_to_cmd(action, default_open_ppt_path="")
@@ -95,6 +108,11 @@ class GestureBridge:
                 self._dispatcher.dispatch(payload)
             except Exception:
                 pass
+        # Always emit a recognized-gesture record so UI / trial polling can
+        # observe what the bridge just dispatched (regardless of whether a
+        # binding produced a payload). This keeps the "trial panel" honest:
+        # an unbound gesture is still "recognized" — just no cmd fired.
+        self._record_recognized_gesture(gesture, action, ev, source)
 
     # --------------------------------------------------------------- lifecycle
 
@@ -113,7 +131,25 @@ class GestureBridge:
         self._ensure().reset_pairing()
 
     def save(self) -> None:
+        """Persist the bridge-owned config to disk.
+
+        The bridge is the source of truth for ``bindings`` (UI mutates
+        ``self._cfg``). When the engine exists we must mirror our bindings
+        into ``engine.cfg`` BEFORE ``save_config`` runs, otherwise the
+        on-disk file won't reflect what the UI just changed.
+        """
+        # Ensure the in-memory cfg's raw view matches our bindings.
+        if isinstance(self._cfg.raw, dict):
+            self._cfg.raw["bindings"] = dict(self._cfg.bindings)
         if self._engine is not None:
+            # Sync bridge-owned bindings into the engine's config object
+            # so engine.save_config() writes the latest values.
+            try:
+                self._engine.cfg.bindings = dict(self._cfg.bindings)
+            except Exception:
+                pass
+            if isinstance(getattr(self._engine.cfg, "raw", None), dict):
+                self._engine.cfg.raw["bindings"] = dict(self._cfg.bindings)
             self._engine.save_config()
 
     # --------------------------------------------------------------- roles
@@ -142,3 +178,35 @@ class GestureBridge:
     def cfg(self):
         """Bridge-owned ``GestureConfig`` (bindings live here)."""
         return self._cfg
+
+    # --------------------------------------------------------------- UI hooks
+
+    def _record_recognized_gesture(
+        self,
+        gesture: Optional[str],
+        action: Optional[str],
+        ev: dict,
+        source: str,
+    ) -> None:
+        """Append a recognized-gesture record to the bridge's ring buffer.
+
+        Called by :meth:`_on_gesture_event` so the UI's trial panel can
+        observe what was recognized, even for unbound gestures (where
+        ``action`` is ``None`` and no cmd fires).
+        """
+        if not gesture:
+            return
+        try:
+            ts = float(ev.get("ts") or 0.0) or time.time()
+        except Exception:
+            ts = 0.0
+        self._recent_gestures.append({
+            "ts": ts,
+            "gesture": str(gesture),
+            "action": action,
+            "source": str(source),
+        })
+
+    def recent_gestures(self) -> list:
+        """Snapshot of recently recognized gestures (oldest → newest)."""
+        return list(self._recent_gestures)
