@@ -17,6 +17,30 @@ from typing import Any, Dict, Optional
 
 
 # ---------------------------------------------------------------------------
+# 手势/动作枚举 + 默认映射
+# ---------------------------------------------------------------------------
+GESTURES = (
+    "FIST", "PALM", "POINTING_UP", "THUMBS_UP", "THUMBS_DOWN",
+    "SWIPE_LEFT", "SWIPE_RIGHT",
+)
+ACTIONS = (
+    "NEXT_PAGE", "PREV_PAGE", "FULL_SCREEN", "FROM_CURRENT",
+    "BLACK_SCREEN", "WHITE_SCREEN", "EXIT",
+    "SCREENSHOT", "OPEN_PPT",
+    "PC_WINDOW_MINIMIZE", "PC_WINDOW_RESTORE",
+)
+DEFAULT_BINDINGS: Dict[str, Optional[str]] = {
+    "FIST":         "BLACK_SCREEN",
+    "PALM":         None,
+    "POINTING_UP":  "NEXT_PAGE",
+    "THUMBS_UP":    "FULL_SCREEN",
+    "THUMBS_DOWN":  "EXIT",
+    "SWIPE_LEFT":   "PREV_PAGE",
+    "SWIPE_RIGHT":  "NEXT_PAGE",
+}
+
+
+# ---------------------------------------------------------------------------
 # 默认配置（新增字段时在此追加，并确保 _merge_defaults 透传用户已有字段）
 # ---------------------------------------------------------------------------
 DEFAULT_GESTURE_CONFIG: Dict[str, Any] = {
@@ -27,6 +51,7 @@ DEFAULT_GESTURE_CONFIG: Dict[str, Any] = {
     "enabled": False,
     "camera_index": 0,
     "show_preview_window": True,
+    "bindings": dict(DEFAULT_BINDINGS),
     "sensitivity": {
         # 捏合：拇指尖到食指尖的距离 / 手掌参考长度；越小越严格
         "pinch_threshold": 0.32,
@@ -58,6 +83,21 @@ class GestureConfig:
     """顶层属性与 raw['...'] 双向同步；UI 既可 ``gcfg.preview_only`` 也可 ``cfg.raw['preview_only']``。"""
 
     raw: Dict[str, Any] = field(default_factory=dict)
+    bindings: Dict[str, Optional[str]] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        # 从 raw['bindings'] 同步到实例属性（_merge_defaults 已合并默认值）
+        raw_bindings = self.raw.get("bindings") if isinstance(self.raw, dict) else None
+        merged: Dict[str, Optional[str]] = dict(DEFAULT_BINDINGS)
+        if isinstance(raw_bindings, dict):
+            for g in GESTURES:
+                if g in raw_bindings:
+                    v = raw_bindings[g]
+                    merged[g] = v if (v is None or v in ACTIONS) else None
+        self.bindings = merged
+        # 反向同步到 raw，便于 save
+        if isinstance(self.raw, dict):
+            self.raw["bindings"] = dict(self.bindings)
 
     # ----- preview_only -----
     @property
@@ -107,6 +147,41 @@ class GestureConfig:
     @property
     def show_preview_window(self) -> bool:
         return bool(self.raw.get("show_preview_window", True))
+
+    # ----- bindings（手势 → 动作 或 None）-----
+    def set_binding(self, gesture: str, action: Optional[str]) -> None:
+        if gesture not in GESTURES:
+            raise ValueError(f"unknown gesture: {gesture!r}")
+        if action is not None and action not in ACTIONS:
+            raise ValueError(f"unknown action: {action!r}")
+        self.bindings[gesture] = action
+        if isinstance(self.raw, dict):
+            self.raw["bindings"] = dict(self.bindings)
+
+    def get_binding(self, gesture: str) -> Optional[str]:
+        return self.bindings.get(gesture)
+
+    def reset_bindings(self) -> None:
+        self.bindings = dict(DEFAULT_BINDINGS)
+        if isinstance(self.raw, dict):
+            self.raw["bindings"] = dict(self.bindings)
+
+    def export_dict(self) -> dict:
+        return dict(self.bindings)
+
+    def import_dict(self, data: dict) -> None:
+        if not isinstance(data, dict):
+            return
+        new_bindings: Dict[str, Optional[str]] = {}
+        for g in GESTURES:
+            if g in data:
+                v = data[g]
+                new_bindings[g] = v if (v is None or v in ACTIONS) else None
+            else:
+                new_bindings[g] = DEFAULT_BINDINGS.get(g)
+        self.bindings = new_bindings
+        if isinstance(self.raw, dict):
+            self.raw["bindings"] = dict(self.bindings)
 
 
 def _merge_defaults(raw: dict) -> dict:
