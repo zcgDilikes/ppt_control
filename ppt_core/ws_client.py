@@ -148,34 +148,33 @@ class WsClient(QThread):
             pass
 
     def stop(self) -> None:
-        """Request graceful shutdown."""
-        loop = self._loop
+        """Request graceful shutdown.
+
+        Sets the stop event and schedules ``ws.close()`` on the asyncio loop.
+        The ``async with websockets.connect()`` block's ``__aexit__`` will await
+        the close, so the connect coroutine exits naturally; we deliberately
+        do NOT call ``loop.stop()`` (which would race with pending close
+        futures and surface as "Event loop stopped before Future completed").
+        """
         try:
             self._stop_event.set()
         except Exception:
             pass
+        loop = self._loop
         if loop is None:
             return
-
         ws = self._ws
-
-        def _shutdown() -> None:
-            if ws is not None:
-                try:
-                    result = ws.close()
-                    if asyncio.iscoroutine(result):
-                        async def _await_close() -> None:
-                            try:
-                                await result
-                            except Exception:
-                                pass
-                        asyncio.ensure_future(_await_close())
-                except Exception:
-                    pass
-            loop.stop()
-
+        if ws is None:
+            return
         try:
-            loop.call_soon_threadsafe(_shutdown)
+            asyncio.run_coroutine_threadsafe(self._do_close(ws), loop)
+        except Exception:
+            pass
+
+    @staticmethod
+    async def _do_close(ws) -> None:
+        try:
+            await ws.close()
         except Exception:
             pass
 
