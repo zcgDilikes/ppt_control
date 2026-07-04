@@ -1,0 +1,9 @@
+.venv/
+__pycache__/
+*.pyc
+.superpowers/
+ppt_pc_client_gesture.json
+ppt_pc_client_settings.json
+ppt_pc_client_downloads.json
+pc_gesture_models/
+.idea/
