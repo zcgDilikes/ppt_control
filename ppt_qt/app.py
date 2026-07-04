@@ -42,7 +42,7 @@ class PptQtApp:
         self._dispatcher = CommandDispatcher(
             self._mouse, self._ppt,
             on_download=lambda url: self._qt.emit_file_arrived(url),
-            on_spotlight=self._on_spotlight,
+            on_spotlight=lambda payload: self._qt.emit_spotlight(payload),
             on_timer_overlay=self._on_timer_overlay,
             on_minimize=self._on_window_minimize,
             on_restore=self._on_window_restore,
@@ -84,6 +84,7 @@ class PptQtApp:
         self._qt.file_arrived.connect(self._on_file_arrived)
         self._qt.record_added.connect(self._on_record_added)
         self._qt.notes_send.connect(self._on_notes_send)
+        self._qt.spotlight.connect(self._on_spotlight)
 
         # PPT notes COM worker (independent thread, no Qt dependency).
         self._notes = PptNotesWorker(

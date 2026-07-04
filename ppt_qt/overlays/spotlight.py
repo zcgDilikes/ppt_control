@@ -36,16 +36,16 @@ class SpotlightOverlay(QWidget):
         self.hide()
 
     def paintEvent(self, _ev):
+        # Spotlight semantics: 椭圆中心透出桌面，外圈压暗。
+        # 1) 整屏先压半透明黑；2) 再用 Clear 在椭圆中心切一个透明洞。
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing, True)
         p.fillRect(self.rect(), QColor(0, 0, 0, 168))
         w, h = self.width(), self.height()
         cx, cy = self._cx * w, self._cy * h
         r = min(self._hw * w, self._hh * h)
-        path = QPainterPath()
-        path.addRect(self.rect())
         inner = QPainterPath()
         inner.addEllipse(cx - r, cy - r, 2 * r, 2 * r)
         p.setCompositionMode(QPainter.CompositionMode_Clear)
-        p.fillPath(path.subtracted(inner), Qt.transparent)
+        p.fillPath(inner, Qt.transparent)
         p.end()

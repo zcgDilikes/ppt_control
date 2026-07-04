@@ -34,6 +34,8 @@ class QtBridge(QObject):
     record_added = Signal(object)  # dict
     # PPT notes
     notes_send = Signal(object)  # dict payload
+    # Spotlight: payload is dict on show/update, None on hide.
+    spotlight = Signal(object)  # dict | None
 
     def emit_ws_status(self, text: str) -> None:
         self.ws_status.emit(str(text))
@@ -61,3 +63,7 @@ class QtBridge(QObject):
 
     def emit_notes_send(self, payload: dict) -> None:
         self.notes_send.emit(dict(payload))
+
+    def emit_spotlight(self, payload: Optional[dict]) -> None:
+        """payload None means hide; non-None dict means show/update."""
+        self.spotlight.emit(payload)
