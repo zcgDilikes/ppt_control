@@ -4,7 +4,7 @@ from PySide6.QtCore import QRect
 SUNSET_TOP = "#ff6e7f"
 SUNSET_MID = "#ffd3d3"
 SUNSET_BOT = "#bfe9ff"
-GLASS_BG = "rgba(20, 20, 30, 200)"
+GLASS_BG = "rgba(20, 20, 30, 140)"
 GLASS_BORDER = "rgba(255, 255, 255, 38)"
 CORAL_PRIMARY = "#ff6e7f"
 BLUE_LINK = "#bfe9ff"

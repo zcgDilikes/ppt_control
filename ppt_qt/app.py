@@ -16,7 +16,7 @@ from ppt_core.downloads import DownloadManager
 from ppt_core.ws_client import WsClient
 from ppt_core.gesture_bridge import GestureBridge
 from ppt_qt.theme import GLOBAL_QSS, paint_sunset_background
-from ppt_qt.widgets import Sidebar, StatusPill, GlassCard, PrimaryButton, SecondaryButton
+from ppt_qt.widgets import Sidebar, StatusPill, GlassCard, PrimaryButton, SecondaryButton, BackgroundWidget
 from ppt_qt.overlays.spotlight import SpotlightOverlay
 from ppt_qt.overlays.timer_overlay import TimerOverlay
 from ppt_qt.pages import ConnectPage, BehaviorPage, TransfersPage, GesturePage
@@ -61,9 +61,8 @@ class PptQtApp:
         self._win.setWindowTitle("PPT 遥控")
         self._win.setMinimumSize(620, 620)
         self._win.resize(780, 780)
-        central = QWidget()
+        central = BackgroundWidget()
         central.setMinimumSize(620, 620)
-        central.paintEvent = self._paint_central_bg
         self._win.setCentralWidget(central)
         h = QHBoxLayout(central)
         h.setContentsMargins(0, 0, 0, 0)
@@ -94,11 +93,6 @@ class PptQtApp:
         h.addWidget(right, 1)
         self._spotlight = SpotlightOverlay()
         self._timer_overlay = TimerOverlay()
-
-    def _paint_central_bg(self, _ev):
-        p = QPainter(self._win.centralWidget())
-        paint_sunset_background(p, self._win.centralWidget().rect())
-        p.end()
 
     def _setup_tray(self):
         if not QSystemTrayIcon.isSystemTrayAvailable():
