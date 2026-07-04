@@ -96,6 +96,8 @@ ppt_qt.py → ppt_qt.app → ppt_qt.pages/* → ppt_core.* ← pc_gesture.engine
 |---|---|
 | 背景 | 日落渐变 `#ff6e7f → #ffd3d3 → #bfe9ff`（QPainter 绘制，首版静态） |
 | 玻璃面 | `rgba(20,20,30,0.55)` + `blur(20px)` + 1px 白色 10% 边 |
+
+> **实现备注**：QtWidgets 不支持 `backdrop-filter`；视觉上以 `rgba(20,20,30,0.55)` 透明叠加 + 1px 白色描边模拟玻璃面（参见 `ppt_qt/theme.py` 中 `GLASS_BG = "rgba(20, 20, 30, 140)"`）。原 spec 中 `blur(20px)` 的承诺在 PySide6 路径下不实现。
 | 圆角 | 卡片 16px / 按钮 10px / 侧栏图标 10px |
 | 字体 | Segoe UI Variable（Win11 默认）；配对码用 Segoe UI Mono 字宽 |
 | 主色 | 珊瑚粉 `#ff6e7f`（操作按钮 / 状态点） |
