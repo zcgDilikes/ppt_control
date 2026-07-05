@@ -70,6 +70,20 @@ class GestureBridge:
         # "source": str}. Entries are appended in ``_on_gesture_event`` and
         # consumed by ``recent_gestures()`` from the Qt thread.
         self._recent_gestures: Deque[Dict[str, object]] = deque(maxlen=_RECENT_GESTURE_LIMIT)
+        # Teaching mode: when True, the bridge still recognizes gestures and
+        # records them in ``_recent_gestures`` for UI/trial observation, but
+        # does NOT call ``dispatcher.dispatch``. The UI's top toggle and the
+        # tutorial dialog control this. Default off — normal dispatch.
+        self._teaching_mode: bool = False
+
+    # --------------------------------------------------------------- teaching
+
+    @property
+    def teaching_mode(self) -> bool:
+        return self._teaching_mode
+
+    def set_teaching_mode(self, on: bool) -> None:
+        self._teaching_mode = bool(on)
 
     # --------------------------------------------------------------- internal
 
@@ -100,6 +114,13 @@ class GestureBridge:
         if slot != "A":
             return
         action = self._cfg.get_binding(gesture)
+        # Always record what we recognized, regardless of teaching_mode —
+        # the UI's trial panel and the tutorial dialog both poll
+        # recent_gestures() and need to see recognition events.
+        self._record_recognized_gesture(gesture, action, ev, source)
+        # Teaching mode: skip the actual cmd dispatch but keep the recording.
+        if self._teaching_mode:
+            return
         if action:
             payload = _action_to_cmd(action, default_open_ppt_path="")
             if payload:
@@ -107,11 +128,6 @@ class GestureBridge:
                     self._dispatcher.dispatch(payload)
                 except Exception:
                     pass
-        # Always emit a recognized-gesture record so UI / trial polling can
-        # observe what the bridge just saw (regardless of whether the binding
-        # produced a payload). Unbound gestures are still "recognized" — just
-        # no cmd fired.
-        self._record_recognized_gesture(gesture, action, ev, source)
 
     # --------------------------------------------------------------- lifecycle
 
