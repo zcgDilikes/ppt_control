@@ -121,7 +121,7 @@ class GesturePage(QWidget):
         ml = QVBoxLayout(map_card)
         ml.setContentsMargins(12, 12, 12, 12)
         ml.setSpacing(6)
-        title1 = QLabel("① 手势映射")
+        title1 = QLabel("② 手势映射")
         title1.setStyleSheet("color:#ffffff;font-size:13px;font-weight:600;")
         ml.addWidget(title1)
         self._binding_combos: Dict[str, QComboBox] = {}
@@ -153,7 +153,7 @@ class GesturePage(QWidget):
         tl = QVBoxLayout(trial_card)
         tl.setContentsMargins(12, 12, 12, 12)
         tl.setSpacing(6)
-        title2 = QLabel("② 实时试用")
+        title2 = QLabel("③ 实时试用")
         title2.setStyleSheet("color:#ffffff;font-size:13px;font-weight:600;")
         tl.addWidget(title2)
         now = QHBoxLayout()
