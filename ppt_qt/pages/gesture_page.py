@@ -53,23 +53,67 @@ class GesturePage(QWidget):
         self._history: List[Dict] = []
         self._current_gesture: Optional[str] = None
 
-        # ---- 反查行 ----
-        top = QHBoxLayout()
-        top.setSpacing(8)
-        top.addWidget(QLabel("查找:"))
+        # ---- 顶部工具栏：教学模式 + 查找 ----
+        toolbar = QHBoxLayout()
+        toolbar.setSpacing(12)
+        self._teaching_check = QCheckBox("教学模式（只识别不派发）")
+        self._teaching_check.setChecked(bool(self._bridge.teaching_mode))
+        self._teaching_check.toggled.connect(self._on_teaching_toggled)
+        toolbar.addWidget(self._teaching_check, 0, Qt.AlignVCenter)
+        toolbar.addStretch(1)
+        toolbar.addWidget(QLabel("查找:"), 0, Qt.AlignVCenter)
         self._query_combo = QComboBox()
         self._query_combo.addItem("（全部未绑定）", userData=None)
         for a in ACTIONS:
             self._query_combo.addItem(_ACTION_LABEL[a], userData=a)
         self._query_combo.currentIndexChanged.connect(self._refresh_query_hint)
-        top.addWidget(self._query_combo, 1)
+        toolbar.addWidget(self._query_combo, 1)
         self._query_hint = QLabel("")
         self._query_hint.setStyleSheet("color:rgba(255,255,255,180);font-size:11px;")
-        top.addWidget(self._query_hint, 2)
+        toolbar.addWidget(self._query_hint, 2)
         outer = QVBoxLayout(self)
         outer.setContentsMargins(20, 20, 20, 20)
         outer.setSpacing(12)
-        outer.addLayout(top)
+        outer.addLayout(toolbar)
+
+        # ---- 段 0 静态手势示图卡（常驻参考） ----
+        cheat_card = QFrame()
+        cheat_card.setObjectName("GlassCard")
+        ccl = QVBoxLayout(cheat_card)
+        ccl.setContentsMargins(12, 12, 12, 12)
+        ccl.setSpacing(4)
+        cheat_title = QLabel("① 手势示图卡")
+        cheat_title.setStyleSheet("color:#ffffff;font-size:13px;font-weight:600;")
+        ccl.addWidget(cheat_title)
+        self._cheat_rows: Dict[str, QFrame] = {}
+        for g in GESTURES:
+            row = QFrame()
+            row.setObjectName("CheatRow")
+            rl = QHBoxLayout(row)
+            rl.setContentsMargins(6, 4, 6, 4)
+            rl.setSpacing(8)
+            ico, name = _GESTURE_META[g]
+            ico_lbl = QLabel(ico)
+            ico_lbl.setFixedWidth(24)
+            ico_lbl.setStyleSheet("font-size:16px;")
+            rl.addWidget(ico_lbl, 0, Qt.AlignVCenter)
+            name_lbl = QLabel(name)
+            name_lbl.setStyleSheet("font-size:13px;")
+            rl.addWidget(name_lbl, 0, Qt.AlignVCenter)
+            action_lbl = QLabel("（未绑定）")
+            action_lbl.setStyleSheet("color:rgba(255,255,255,160);font-size:11px;")
+            rl.addWidget(action_lbl, 0, Qt.AlignVCenter)
+            rl.addStretch(1)
+            ccl.addWidget(row)
+            self._cheat_rows[g] = row
+            self._cheat_rows[g].__dict__["_action_lbl"] = action_lbl
+        # Initial binding labels
+        for g, row in self._cheat_rows.items():
+            action = self._cfg.get_binding(g)
+            row.__dict__["_action_lbl"].setText(
+                f"→ {_ACTION_LABEL.get(action, '（未绑定）')}" if action else "（未绑定）"
+            )
+        outer.addWidget(cheat_card)
 
         # ---- 段 1 7 行映射 ----
         map_card = QFrame()
@@ -133,6 +177,10 @@ class GesturePage(QWidget):
         # ---- 段 3 控制 ----
         ctrl = QHBoxLayout()
         ctrl.setSpacing(6)
+        b_tutorial = QPushButton("重看教学")
+        b_tutorial.setObjectName("SecondaryButton")
+        b_tutorial.clicked.connect(self._on_show_tutorial)
+        ctrl.addWidget(b_tutorial)
         b_start = QPushButton("启动手势")
         b_start.setObjectName("PrimaryButton")
         b_start.clicked.connect(lambda: bridge.start())
@@ -190,6 +238,34 @@ class GesturePage(QWidget):
         self._poll_timer.start()
 
     # ----- 私有 -----
+    def _on_teaching_toggled(self, on: bool) -> None:
+        self._bridge.set_teaching_mode(bool(on))
+        self._status_lbl.setText(
+            f"教学模式：{'开（只识别不派发）' if on else '关'}"
+        )
+
+    def _on_show_tutorial(self) -> None:
+        from ppt_qt.pages.gesture_tutorial_dialog import GestureTutorialDialog
+        dlg = GestureTutorialDialog(bridge=self._bridge, parent=self)
+        dlg.exec()
+
+    def _maybe_show_tutorial(self) -> None:
+        """Called from showEvent: pop tutorial if first time and engine is up."""
+        if self._cfg.tutorial_done:
+            return
+        eng = self._bridge.engine
+        if eng is None:
+            return  # user hasn't pressed Start yet; nothing to demo against
+        from ppt_qt.pages.gesture_tutorial_dialog import GestureTutorialDialog
+        dlg = GestureTutorialDialog(bridge=self._bridge, parent=self)
+        dlg.exec()
+
+    def showEvent(self, ev):
+        super().showEvent(ev)
+        # Defer to next tick so the page is fully laid out before the modal
+        # appears (avoids focus/geometry glitches).
+        QTimer.singleShot(50, self._maybe_show_tutorial)
+
     def _populate_combo(self, gesture: str, cb: QComboBox) -> None:
         cur = self._cfg.get_binding(gesture)
         for i in range(cb.count()):
@@ -203,6 +279,12 @@ class GesturePage(QWidget):
         self._cfg.set_binding(gesture, action)
         self._bridge.save()
         self._refresh_query_hint()
+        # Sync the cheat-card row label too.
+        if gesture in self._cheat_rows:
+            label = _ACTION_LABEL.get(action, "（未绑定）") if action else "（未绑定）"
+            self._cheat_rows[gesture].__dict__["_action_lbl"].setText(
+                f"→ {label}" if action else "（未绑定）"
+            )
         self._status_lbl.setText(f"已更新 {gesture} -> {action or '禁用'}")
 
     def _refresh_query_hint(self) -> None:
@@ -300,6 +382,15 @@ class GesturePage(QWidget):
             self._history.insert(0, {"ts": ts or time.time(), "gesture": gesture, "action": action})
             self._history = self._history[:5]
             self._last_seen_ts = max(self._last_seen_ts, ts or time.time())
+            # Highlight the matching row in the cheat card (green flash, 2s).
+            if hasattr(self, "_cheat_rows") and gesture in self._cheat_rows:
+                self._cheat_rows[gesture].setStyleSheet(
+                    "background:rgba(34,197,94,0.4);border-radius:6px;"
+                )
+                QTimer.singleShot(
+                    2000,
+                    lambda g=gesture: self._cheat_rows[g].setStyleSheet("")
+                )
         lines = []
         for h in self._history:
             t = time.strftime("%H:%M:%S", time.localtime(float(h.get("ts") or 0.0)))
