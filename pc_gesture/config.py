@@ -51,6 +51,7 @@ DEFAULT_GESTURE_CONFIG: Dict[str, Any] = {
     "enabled": False,
     "camera_index": 0,
     "show_preview_window": True,
+    "tutorial_done": False,
     "bindings": dict(DEFAULT_BINDINGS),
     "sensitivity": {
         # 捏合：拇指尖到食指尖的距离 / 手掌参考长度；越小越严格
@@ -147,6 +148,15 @@ class GestureConfig:
     @property
     def show_preview_window(self) -> bool:
         return bool(self.raw.get("show_preview_window", True))
+
+    # ----- tutorial_done -----
+    @property
+    def tutorial_done(self) -> bool:
+        return bool(self.raw.get("tutorial_done", False))
+
+    @tutorial_done.setter
+    def tutorial_done(self, v: bool) -> None:
+        self.raw["tutorial_done"] = bool(v)
 
     # ----- bindings（手势 → 动作 或 None）-----
     def set_binding(self, gesture: str, action: Optional[str]) -> None:
