@@ -70,7 +70,7 @@ App boot
        └─ GesturePage._maybe_show_tutorial()
             ├─ if not cfg.tutorial_done AND bridge.engine 已启动过:
             │     └─ 自动弹 GestureTutorialDialog（模态）
-            │           └─ 完成后 cfg.tutorial_done = True; bridge.save()
+            │           └─ 7 步走完或全部跳过 → cfg.tutorial_done = True; bridge.save()
             └─ else: 静默
 ```
 
@@ -79,6 +79,10 @@ App boot
 ### 2.2 向导单步流程
 
 ```
+GestureTutorialDialog.__init__:
+  ├─ 保存 bridge.teaching_mode 原值到 self._prev_teaching_mode
+  └─ bridge.set_teaching_mode(True)         ← 避免向导中误派发
+
 GestureTutorialDialog.step = i (0..6)
   显示 gesture_i 的卡片（emoji + 中文名 + 触发动作）
   ├─ bridge.recent_gestures() 轮询（150ms）
@@ -90,6 +94,12 @@ GestureTutorialDialog.step = i (0..6)
     ├─ 7 步全 DONE → status "全部完成！" → 0.8s 后关闭
     ├─ 任意 SKIPPED → 关闭时 status "已跳过 N 个，可点「重看教学」再来"
     └─ 用户点「结束」 → 立即关闭
+
+GestureTutorialDialog.closeEvent / reject:
+  ├─ bridge.set_teaching_mode(self._prev_teaching_mode)  ← 恢复原值
+  └─ if step 数 == 7:
+       cfg.tutorial_done = True
+       bridge.save()
 ```
 
 ### 2.3 实时试用面板（现有 + 增强）
