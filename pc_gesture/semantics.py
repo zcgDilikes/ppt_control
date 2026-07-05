@@ -426,14 +426,14 @@ class GestureSemantics:
             events.append({
                 "type": "gesture",
                 "gesture": "SWIPE_RIGHT",
-                "slot": slot,
+                "slot": st.slot,
                 "source": "gesture:swipe",
             })
         else:
             events.append({
                 "type": "gesture",
                 "gesture": "SWIPE_LEFT",
-                "slot": slot,
+                "slot": st.slot,
                 "source": "gesture:swipe",
             })
         st.last_swire_at = now

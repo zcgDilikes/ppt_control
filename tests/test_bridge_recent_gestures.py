@@ -92,6 +92,9 @@ def test_on_gesture_event_accepts_source_arg(monkeypatch):
 def test_recent_gestures_records_recognized_gesture(monkeypatch):
     """I-3: bridge records every recognized gesture (bound or unbound) for UI."""
     _mod, bridge = _make_bridge(monkeypatch)
+    # Reset to defaults — the bridge loads the user's real config from disk,
+    # so PALM's binding may not be None if the user has customized it.
+    bridge.cfg.reset_bindings()
     bridge.cfg.set_binding("FIST", "BLACK_SCREEN")
     # Bound: records action
     bridge._on_gesture_event(
