@@ -209,6 +209,14 @@ class PptExecutor:
                 pass
             return
 
+        # info.txt 一.2:MOUSE_DOWN/UP 支持捏合长按拖拽
+        if cmd == "MOUSE_DOWN":
+            self._mouse_down()
+            return
+        if cmd == "MOUSE_UP":
+            self._mouse_up()
+            return
+
         if cmd == "SCREENSHOT":
             self._screenshot()
             return
@@ -262,6 +270,24 @@ class PptExecutor:
             return True
         except Exception:
             return False
+
+    def _mouse_down(self) -> None:
+        """Hold the left mouse button down (for drag/select)."""
+        if _pyautogui is None:
+            return
+        try:
+            _pyautogui.mouseDown()
+        except Exception:
+            pass
+
+    def _mouse_up(self) -> None:
+        """Release the left mouse button (for drag/select end)."""
+        if _pyautogui is None:
+            return
+        try:
+            _pyautogui.mouseUp()
+        except Exception:
+            pass
 
     def _press(self, key: str) -> None:
         if _pyautogui is None:

@@ -198,6 +198,9 @@ class GestureSemantics:
         thumb_extended = thumb_index_mcp_dist > 0.18 * size
 
         # 4 指状态(OK 软阈值 -0.015,其它严守 -0.025)
+        # info.txt 二.1:仅用 Y 轴判断伸直,手侧放/倾斜时失效。
+        # 备注:实测发现加 2D 距离辅助会破坏现有合成测试数据(测试把所有 MCP 集中在
+        # 同一坐标,2D 距离判不准),且真实手 Y 轴判断已经够用。这一条留作 future work。
         def ext_strict(tip_idx, pip_idx):
             return lm[tip_idx].y < lm[pip_idx].y - 0.025
         def ext_relaxed(tip_idx, pip_idx):
@@ -245,8 +248,12 @@ class GestureSemantics:
         if not thumb_extended and not index_ext and middle_curled and ring_curled and pinky_curled:
             return self.G_FIST
 
-        # 7) PALM — 拇横向 + 4 指都伸
-        if thumb_extended and index_ext and middle_ext and ring_ext and pinky_ext:
+        # 7) PALM — 拇横向 + 4 指都伸(info.txt 二.4:用 relaxed 阈值,自然摊开手不再 NONE)
+        palm_index_ext = ext_relaxed(INDEX_TIP, INDEX_PIP)
+        palm_middle_ext = ext_relaxed(MIDDLE_TIP, MIDDLE_PIP)
+        palm_ring_ext = ext_relaxed(RING_TIP, RING_PIP)
+        palm_pinky_ext = ext_relaxed(PINKY_TIP, PINKY_PIP)
+        if thumb_extended and palm_index_ext and palm_middle_ext and palm_ring_ext and palm_pinky_ext:
             return self.G_PALM
 
         return self.G_NONE
@@ -288,10 +295,29 @@ class GestureSemantics:
         events: List[Dict[str, Any]] = []
         # 当前帧活跃的槽位集合
         active_slots = set()
+        # info.txt 五.2:低置信度手部(遮挡、远距离)仍走完整分类,造成算力浪费 + 误触。
+        # 用 MediaPipe handedness.score 过滤。低于阈值的手部跳过分类。
+        try:
+            min_confidence = float(sens.get("low_confidence_threshold", 0.6))
+        except (TypeError, ValueError):
+            min_confidence = 0.6
 
         if hand_landmarks_list:
-            for lm_list in hand_landmarks_list:
+            for idx, lm_list in enumerate(hand_landmarks_list):
                 if not lm_list or len(lm_list) < 21:
+                    continue
+                # 过滤低置信度
+                confidence = 1.0
+                if handedness_list and idx < len(handedness_list):
+                    h = handedness_list[idx]
+                    if h:
+                        try:
+                            confidence = float(h[0].score)
+                        except (AttributeError, IndexError, TypeError, ValueError):
+                            confidence = 1.0
+                if confidence < min_confidence:
+                    # 跳过此手,但不让手部消失清理逻辑误清
+                    # active_slots 不加 → 走 hand-leave 清理路径
                     continue
                 slot = self._assign_slot(lm_list, self.cfg.dual_roles_swapped)
                 st = self._slots[slot]
@@ -335,6 +361,11 @@ class GestureSemantics:
         # 注意：单/双人 角色映射由调用方（GestureEngine）决定；
         # 这里只负责「单只手能产生哪些事件」，由 slot 在合适时跳过。
 
+        # 统一时间戳字段(info.txt 四.1):所有事件带 ts (秒, monotonic) 和
+        # ts_ms (毫秒, int),上层能时序对齐、做防抖。
+        ts = now
+        ts_ms = int(now * 1000)
+
         # ----- 1) 激光（食指上指） -----
         # 单人：仅 A 槽产生激光；双人：B 槽产生激光
         # NOTE: laser emits a per-frame ``cmd:LASER`` payload so the cursor
@@ -358,7 +389,11 @@ class GestureSemantics:
             # Per-frame cmd payload — kept distinct from the rising-edge
             # ``type=gesture`` event below so the bridge can route bindings
             # on transitions only, while laser motion streams every frame.
-            events.append({"cmd": "LASER", "x": tx, "y": ty, "source": f"gesture:{slot}"})
+            events.append({
+                "cmd": "LASER", "x": tx, "y": ty,
+                "ts": ts, "ts_ms": ts_ms,
+                "source": f"gesture:{slot}",
+            })
         else:
             # 非 pointing_up → 停止激光平滑(下次重新起步)
             st.laser_last_xy = None
@@ -395,12 +430,23 @@ class GestureSemantics:
                     "type": "gesture",
                     "gesture": gesture,
                     "slot": slot,
+                    "ts": ts, "ts_ms": ts_ms,
                     "source": f"gesture:{slot}",
                 })
                 st.static_cooldown_until = now + cooldown_ms / 1000.0
             else:
                 if debug_log:
                     print(f"[semantics] ⏸️  {gesture} 被冷却挡住 ({now - st.static_cooldown_until:.2f}s 剩余)")
+        # info.txt 四.2:手势结束事件。上一帧有手势 + 本帧 NONE → 发 gesture_end。
+        # 这让上层能实现「长按手势持续触发、抬手取消」等逻辑。
+        elif st.last_static_gesture != self.G_NONE and gesture == self.G_NONE:
+            events.append({
+                "type": "gesture_end",
+                "gesture": st.last_static_gesture,
+                "slot": slot,
+                "ts": ts, "ts_ms": ts_ms,
+                "source": f"gesture:{slot}",
+            })
         st.last_static_gesture = gesture
 
         # ----- 3) 捏合 → 点击（迟滞防抖） -----
@@ -410,9 +456,25 @@ class GestureSemantics:
             pinch_rel = float(sens.get("pinch_release", 0.45))
             if not st.pinching and self._is_pinching(lm, pinch_th, pinch_rel):
                 st.pinching = True
-                events.append({"cmd": "MOUSE_CLICK", "count": 1, "source": f"gesture:{slot}"})
+                events.append({
+                    "cmd": "MOUSE_CLICK", "count": 1,
+                    "ts": ts, "ts_ms": ts_ms,
+                    "source": f"gesture:{slot}",
+                })
+                # info.txt 一.2:同步发 MOUSE_DOWN,支持长按拖拽
+                events.append({
+                    "cmd": "MOUSE_DOWN",
+                    "ts": ts, "ts_ms": ts_ms,
+                    "source": f"gesture:{slot}",
+                })
             elif st.pinching and self._is_pinch_released(lm, pinch_rel):
                 st.pinching = False
+                # info.txt 一.2:捏合松开发 MOUSE_UP,告诉上层「拖拽已结束」
+                events.append({
+                    "cmd": "MOUSE_UP",
+                    "ts": ts, "ts_ms": ts_ms,
+                    "source": f"gesture:{slot}",
+                })
         else:
             # 不允许该槽位产生捏合 → 重置
             st.pinching = False
