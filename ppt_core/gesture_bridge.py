@@ -132,6 +132,7 @@ class GestureBridge(QObject):
         gesture = ev.get("gesture")
         slot = ev.get("slot", "A")
         if slot != "A":
+            print(f"[bridge] ignored slot={slot} gesture={gesture} (only slot A fires)")
             return
         action = self._cfg.get_binding(gesture)
         # Always record what we recognized, regardless of teaching_mode —
@@ -140,14 +141,18 @@ class GestureBridge(QObject):
         self._record_recognized_gesture(gesture, action, ev, source)
         # Teaching mode: skip the actual cmd dispatch but keep the recording.
         if self._teaching_mode:
+            print(f"[bridge] 🎓 教学模式 → 识别 {gesture} 但跳过 dispatch")
             return
         if action:
             payload = _action_to_cmd(action, default_open_ppt_path="")
             if payload:
+                print(f"[bridge] ✅ {gesture} → {action} → dispatch {payload}")
                 try:
                     self._dispatcher.dispatch(payload)
-                except Exception:
-                    pass
+                except Exception as e:
+                    print(f"[bridge] ❌ dispatch 失败: {e}")
+        else:
+            print(f"[bridge] ⚠️  {gesture} 识别成功但未绑定 action,跳过 dispatch")
 
     # --------------------------------------------------------------- frames
 

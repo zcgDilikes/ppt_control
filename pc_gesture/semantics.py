@@ -379,6 +379,7 @@ class GestureSemantics:
             # 修复:now 是 time.monotonic() 秒,static_cooldown_until 也是秒。直接比较,不要乘 1000。
             # 旧逻辑 now * 1000.0 >= static_cooldown_until 单位不匹配,冷却形同虚设。
             if now >= st.static_cooldown_until and cooldown_ms > 0:
+                print(f"[semantics] 🎯 识别 {gesture} (slot={slot}) → 派发 type=gesture")
                 events.append({
                     "type": "gesture",
                     "gesture": gesture,
@@ -386,6 +387,8 @@ class GestureSemantics:
                     "source": f"gesture:{slot}",
                 })
                 st.static_cooldown_until = now + cooldown_ms / 1000.0
+            else:
+                print(f"[semantics] ⏸️  {gesture} 被冷却挡住 ({now - st.static_cooldown_until:.2f}s 剩余)")
         st.last_static_gesture = gesture
 
         # ----- 3) 张掌持续 → 托掌进轮盘（on_send_text） -----
