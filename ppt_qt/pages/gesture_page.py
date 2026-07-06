@@ -11,6 +11,7 @@ from PySide6.QtGui import QPixmap, QImage
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QComboBox, QCheckBox, QFileDialog, QMessageBox, QFrame,
+    QSpinBox, QDoubleSpinBox,
 )
 
 from pc_gesture.config import GESTURES, ACTIONS
@@ -330,6 +331,90 @@ class GesturePage(QWidget):
         ctrl.addWidget(b_import)
         cl.addLayout(ctrl)
 
+        # ----- ④ 灵敏度调节(可折叠,默认折叠) -----
+        # 之前抽到 cfg.sensitivity 的 9 个 magic number 没有 UI 可调,用户只能改 JSON。
+        # 现在每个字段一个 QDoubleSpinBox + 重置默认按钮。
+        sens_card = QFrame()
+        sens_card.setObjectName("GlassCard")
+        sens_l = QVBoxLayout(sens_card)
+        sens_l.setContentsMargins(12, 12, 12, 12)
+        sens_l.setSpacing(6)
+        sens_title = QLabel("④ 灵敏度调节(高级)")
+        sens_title.setStyleSheet("color:#ffffff;font-size:13px;font-weight:600;")
+        sens_l.addWidget(sens_title)
+        # 可折叠 — 用一个 QCheckBox 当 toggle,取消勾选时隐藏内部
+        self._sens_expand = QCheckBox("显示灵敏度调节")
+        self._sens_expand.setChecked(False)
+        self._sens_expand.toggled.connect(self._on_sens_expand_toggled)
+        sens_l.addWidget(self._sens_expand)
+        # 内部 panel(默认隐藏)
+        self._sens_panel = QWidget()
+        self._sens_panel.setVisible(False)
+        sens_inner = QVBoxLayout(self._sens_panel)
+        sens_inner.setContentsMargins(0, 0, 0, 0)
+        sens_inner.setSpacing(4)
+        # 16 个字段:label + spinbox
+        # (label, key, default, min, max, step, scale, suffix)
+        sens_fields = [
+            ("拇-食指尖接触比例",  "thumb_touch_ratio",  0.08, 0.0, 1.0, 0.01, 3, ""),
+            ("拇-食指伸直比例",    "thumb_extend_ratio", 0.18, 0.0, 1.0, 0.01, 3, ""),
+            ("伸直 Y 偏移(严)",    "ext_strict_y",       0.025, 0.0, 0.1, 0.005, 3, ""),
+            ("伸直 Y 偏移(松)",    "ext_relaxed_y",      0.015, 0.0, 0.1, 0.005, 3, ""),
+            ("卷曲 Y 偏移",        "curl_y",             0.005, 0.0, 0.05, 0.001, 3, ""),
+            ("Y 模糊容差(2D 兜底)", "ambiguous_y_tolerance", 0.005, 0.0, 0.05, 0.001, 3, ""),
+            ("2D 距离阈值",         "ext_2d_ratio",       0.85, 0.0, 1.5, 0.01, 2, ""),
+            ("L 拇指伸出阈值",     "l_sign_thumb_extend_ratio", 0.30, 0.0, 1.0, 0.01, 2, ""),
+            ("冷却时间 (ms)",      "gesture_cooldown_ms", 400, 0, 3000, 50, 0, "ms"),
+            ("手势重置空闲 (s)",   "static_reset_idle_s", 0.3, 0.0, 2.0, 0.05, 2, "s"),
+            ("手部消失清理 (s)",   "hand_lost_cleanup_s", 0.5, 0.0, 3.0, 0.1, 1, "s"),
+            ("置信度阈值",         "low_confidence_threshold", 0.6, 0.0, 1.0, 0.05, 2, ""),
+            ("配对 pointing (s)",  "pairing_pointing_up_s", 1.0, 0.0, 5.0, 0.1, 1, "s"),
+            ("配对窗口 (ms)",      "pairing_window_ms",  3000, 500, 10000, 100, 0, "ms"),
+            ("激光平滑",           "laser_smoothing",    0.55, 0.0, 0.95, 0.05, 2, ""),
+        ]
+        self._sens_spins = {}  # key → QSpinBox / QDoubleSpinBox
+        from pc_gesture.config import DEFAULT_GESTURE_CONFIG
+        default_sens = DEFAULT_GESTURE_CONFIG["sensitivity"]
+        for label, key, default, mn, mx, step, decimals, suffix in sens_fields:
+            row = QHBoxLayout()
+            row.setSpacing(6)
+            lbl = QLabel(label)
+            lbl.setStyleSheet("color:rgba(255,255,255,180);font-size:11px;")
+            lbl.setMinimumWidth(160)
+            row.addWidget(lbl)
+            current = float(default_sens.get(key, default))
+            if decimals == 0:
+                spin = QSpinBox()
+                spin.setRange(int(mn), int(mx))
+                spin.setSingleStep(int(step))
+                spin.setValue(int(current))
+            else:
+                spin = QDoubleSpinBox()
+                spin.setRange(mn, mx)
+                spin.setSingleStep(step)
+                spin.setDecimals(decimals)
+                spin.setValue(current)
+            spin.setSuffix(f" {suffix}" if suffix else "")
+            spin.valueChanged.connect(lambda v, k=key: self._on_sens_changed(k, v))
+            self._sens_spins[key] = spin
+            row.addWidget(spin, 1)
+            sens_inner.addLayout(row)
+        # 复选框:debug_log(用 self._cfg.sensitivity 读用户当前值,不用 default)
+        self._debug_log_check = QCheckBox("调试日志(终端打 [bridge]/[semantics] 日志)")
+        self._debug_log_check.setChecked(bool(self._cfg.sensitivity.get("debug_log", False)))
+        self._debug_log_check.toggled.connect(self._on_debug_log_toggled)
+        sens_inner.addWidget(self._debug_log_check)
+        # 重置默认按钮
+        reset_row = QHBoxLayout()
+        reset_row.addStretch(1)
+        b_reset = QPushButton("重置默认")
+        b_reset.setObjectName("SecondaryButton")
+        b_reset.clicked.connect(self._on_sens_reset)
+        reset_row.addWidget(b_reset)
+        sens_inner.addLayout(reset_row)
+        sens_l.addWidget(self._sens_panel)
+        cl.addWidget(sens_card)
+
         return col
 
     # ----- 私有：每帧渲染 -----
@@ -503,6 +588,40 @@ class GesturePage(QWidget):
         self._status_lbl.setText(
             f"教学模式：{'开（只识别不派发）' if on else '关'}"
         )
+
+    # ----- 灵敏度 UI 回调 -----
+    def _on_sens_expand_toggled(self, on: bool) -> None:
+        self._sens_panel.setVisible(on)
+
+    def _on_sens_changed(self, key: str, value) -> None:
+        """spinbox 变化时把值写回 cfg,持久化到磁盘。"""
+        if "sensitivity" not in self._cfg.raw or not isinstance(self._cfg.raw["sensitivity"], dict):
+            self._cfg.raw["sensitivity"] = {}
+        self._cfg.raw["sensitivity"][key] = value
+        self._bridge.save()
+
+    def _on_debug_log_toggled(self, on: bool) -> None:
+        if "sensitivity" not in self._cfg.raw or not isinstance(self._cfg.raw["sensitivity"], dict):
+            self._cfg.raw["sensitivity"] = {}
+        self._cfg.raw["sensitivity"]["debug_log"] = bool(on)
+        self._bridge.save()
+
+    def _on_sens_reset(self) -> None:
+        """重置所有灵敏度为默认值(保留 debug_log 现状)。"""
+        from pc_gesture.config import DEFAULT_GESTURE_CONFIG
+        defaults = dict(DEFAULT_GESTURE_CONFIG["sensitivity"])
+        debug_log = self._cfg.raw.get("sensitivity", {}).get("debug_log", False)
+        self._cfg.raw["sensitivity"] = defaults
+        self._cfg.raw["sensitivity"]["debug_log"] = debug_log
+        for key, spin in self._sens_spins.items():
+            value = defaults.get(key, 0.0)
+            if isinstance(spin, QSpinBox):
+                spin.setValue(int(value))
+            else:
+                spin.setValue(float(value))
+        self._debug_log_check.setChecked(debug_log)
+        self._bridge.save()
+        self._status_lbl.setText("灵敏度已重置为默认")
 
     def _populate_combo(self, gesture: str, cb: QComboBox) -> None:
         cur = self._cfg.get_binding(gesture)
