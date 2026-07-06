@@ -146,6 +146,31 @@ def test_gesture_end_not_fired_when_continuous_none():
     assert not end_events
 
 
+# ---- Phase 5b: fixed.txt B-4 OK 不应触发 MOUSE_CLICK ----
+
+def test_ok_gesture_does_not_trigger_mouse_click(monkeypatch):
+    """OK 手势(拇-食指尖接触)恰好也满足 _is_pinching。
+
+    修复前:同一帧既 type=gesture:OK 又 cmd=MOUSE_CLICK + MOUSE_DOWN,
+    派发双重,用户做 OK 翻页时同时误触鼠标。
+    修复后:OK 帧不进入捏合路径。
+    """
+    cfg = load_gesture_config()
+    sem = GestureSemantics(cfg)
+    # mock classifier 永远返回 OK
+    sem._classify_static = lambda lm: sem.G_OK
+    # 造一个手 landmark,让 _is_pinching 也会返回 True(模拟真实 OK 手)
+    lm = _make_pinch_hand()  # 复用:索引+拇 tip 接近
+    events = sem.process([lm], [])
+    cmds = [e.get("cmd") for e in events if e.get("cmd")]
+    # 不应该有 MOUSE_CLICK / MOUSE_DOWN / MOUSE_UP
+    assert "MOUSE_CLICK" not in cmds, f"OK should not trigger MOUSE_CLICK, got {cmds}"
+    assert "MOUSE_DOWN" not in cmds
+    # 但应该有 type=gesture:OK 事件
+    gesture_events = [e for e in events if e.get("type") == "gesture"]
+    assert any(e.get("gesture") == "OK" for e in gesture_events), f"OK event missing in {events}"
+
+
 # ---- Phase 5: MOUSE_DOWN/UP for pinch ----
 
 def test_pinch_start_emits_mouse_down_and_click():

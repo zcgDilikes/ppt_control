@@ -235,13 +235,12 @@ def test_pointing_not_misread_as_scissors(sem):
 
 def test_partial_curl_still_ok(sem):
     """边界 #1:OK 时三指里只有 2 指完全 EXT,1 指微卷,仍应判 OK。"""
-    # middle 真正伸,ring 真正伸,pinky 微卷(只稍低 pip 一点点)
     lm = _hand(
         thumb_xy=(0.55, 0.2),
         index_tip_xy=(0.55, 0.2),
-        middle_tip_xy=(0.65, 0.2),       # 真正伸(pip.y=0.22, tip.y=0.2)
+        middle_tip_xy=(0.65, 0.2),       # 真正伸
         ring_tip_xy=(0.7, 0.2),         # 真正伸
-        pinky_tip_xy=(0.75, 0.51),      # 微卷(pip.y=0.53, tip.y=0.51,差 -0.02 < -0.015 阈值)
+        pinky_tip_xy=(0.75, 0.51),      # 微卷
     )
     assert sem._classify_static(lm) == sem.G_OK
 

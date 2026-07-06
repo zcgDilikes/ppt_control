@@ -289,10 +289,15 @@ class GestureEngine:
                     except Exception:
                         pass
         except Exception as e:
-            if os.environ.get("GESTURE_DEBUG"):
+            if os.environ.get("GESTURE_DEBUG") or self.cfg.sensitivity.get("debug_log"):
                 traceback.print_exc()
             self._safe_status(f"手势识别异常：{e}")
         finally:
+            # B-10:显式释放 MediaPipe landmarker 资源
+            try:
+                landmarker.close()
+            except Exception:
+                pass
             try:
                 cap.release()
             except Exception:
@@ -314,8 +319,6 @@ class GestureEngine:
         ``self._semantics._classify_static`` so diagnostics stay in sync with
         what the recognizer actually sees.
         """
-        from .types import FrameSnapshot, HandSnapshot
-
         h, w = frame.shape[:2]
         # frame_rgb = RGB888 bytes (Qt QImage 用 RGB888, 不是 BGR)
         rgb = frame[:, :, ::-1].reshape(-1).tobytes() if frame is not None else None

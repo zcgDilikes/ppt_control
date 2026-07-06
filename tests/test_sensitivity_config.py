@@ -194,7 +194,6 @@ def test_user_can_shorten_pairing_pointing_up_duration():
     # A 槽 doing pointing_up,设 pointing_up_start 0.7s 前(> 0.5s 阈值)
     sem._pairing._slot_pointing_up_start["A"] = time.monotonic() - 0.7
     sem._pairing.update(
-        time.monotonic(),
         {"A": sem.G_POINTING_UP, "B": "NONE"},
         sem.G_POINTING_UP,
     )

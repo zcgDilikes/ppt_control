@@ -26,7 +26,6 @@ def test_pairing_accepts_pointing_up_from_either_slot():
     sem.start_pairing(window_ms=5000)
     # 直接调 PairingService.update() 喂状态
     sem._pairing.update(
-        time.monotonic(),
         {"A": "NONE", "B": sem.G_POINTING_UP},
         sem.G_POINTING_UP,
     )
@@ -34,7 +33,6 @@ def test_pairing_accepts_pointing_up_from_either_slot():
     assert sem._pairing.confirmed is False
     # 时间跳到 1.5s 后再 update
     sem._pairing.update(
-        time.monotonic() - 1.5,  # 倒退 1.5s
         {"A": "NONE", "B": sem.G_POINTING_UP},
         sem.G_POINTING_UP,
     )
@@ -42,7 +40,7 @@ def test_pairing_accepts_pointing_up_from_either_slot():
     # 倒退不实际生效。改用 mock approach:
     # 让 slot_pointing_up_start 直接设为 1.5s 前
     sem._pairing._slot_pointing_up_start["B"] = time.monotonic() - 1.5
-    sem._pairing.update(time.monotonic(), {"A": "NONE", "B": sem.G_POINTING_UP}, sem.G_POINTING_UP)
+    sem._pairing.update({"A": "NONE", "B": sem.G_POINTING_UP}, sem.G_POINTING_UP)
     assert sem._pairing.confirmed is True
 
 
@@ -51,7 +49,11 @@ def test_pairing_does_not_confirm_when_no_pointing():
     cfg = load_gesture_config()
     sem = GestureSemantics(cfg)
     sem.start_pairing(window_ms=5000)
-    sem._update_pairing(time.monotonic())
+    sem._update_pairing_called_explicitly = True  # B-17:不再用 _update_pairing
+    sem._pairing.update(
+        {slot: st.last_static_gesture for slot, st in sem._slots.items()},
+        sem.G_POINTING_UP,
+    )
     assert sem._pairing.confirmed is False
     assert sem._pairing.active is True
 

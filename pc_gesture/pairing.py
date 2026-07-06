@@ -29,7 +29,9 @@ class PairingService:
         self._active: bool = False
         self._started: float = 0.0
         self._confirmed: bool = False
-        self._active_window_ms: int = 0  # start() 时锁定,state 优先用
+        # A-2:窗口过期标志,保留 _active 让 state 仍能返回 EXPIRED(而非 IDLE)
+        self._expired: bool = False
+        self._active_window_ms: int = 0
         self._slot_pointing_up_start: Dict[str, Optional[float]] = {"A": None, "B": None}
 
     def start(self, window_ms: Optional[int] = None) -> None:
@@ -41,6 +43,7 @@ class PairingService:
                 window_ms = 3000
         self._active_window_ms = max(500, int(window_ms))
         self._active = True
+        self._expired = False
         self._started = time.monotonic()
         self._confirmed = False
         for slot in self._slot_pointing_up_start:
@@ -50,21 +53,24 @@ class PairingService:
         """取消配对,清空所有状态。"""
         self._active = False
         self._confirmed = False
+        self._expired = False
         self._started = 0.0
         for slot in self._slot_pointing_up_start:
             self._slot_pointing_up_start[slot] = None
 
-    def update(self, now: float, slot_gestures: Dict[str, str], pointing_up_enum: str) -> bool:
+    def update(self, slot_gestures: Dict[str, str], pointing_up_enum: str) -> bool:
         """每帧调用一次,喂 slot → 当前 gesture 状态。
 
-        Returns True iff this update triggered confirmation.
+        Returns True iff this update triggered confirmation。
+        A-3:update 内部用 time.monotonic() 单一时间源,跟 state 一致。
         """
         if not self._active or self._confirmed:
             return False
+        now = time.monotonic()
         elapsed_ms = (now - self._started) * 1000.0
         if elapsed_ms > self._active_window_ms:
-            # 超时,本次配对失败
-            self._active = False
+            # A-2:超时设 _expired=True 保留 _active,state 可返 EXPIRED
+            self._expired = True
             return False
 
         try:
@@ -87,10 +93,12 @@ class PairingService:
     @property
     def state(self) -> str:
         """IDLE / WAITING / CONFIRMED / EXPIRED。"""
-        if not self._active:
-            return self.PAIRING_IDLE
         if self._confirmed:
             return self.PAIRING_CONFIRMED
+        if self._expired:
+            return self.PAIRING_EXPIRED
+        if not self._active:
+            return self.PAIRING_IDLE
         elapsed_ms = (time.monotonic() - self._started) * 1000.0
         if elapsed_ms > self._active_window_ms:
             return self.PAIRING_EXPIRED

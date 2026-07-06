@@ -75,8 +75,8 @@ class HandState:
     pinching: bool = False
     # 激光上一帧坐标(用于 EMA)
     laser_last_xy: Optional[Tuple[float, float]] = None
-    # 配对确认累计:某 slot 在 pointing_up 上稳定了多久
-    pointing_up_start: Optional[float] = None
+    # 注:pointing_up_start 字段已删除(A-4)— 配对状态机迁到 PairingService,
+    # 进度由 PairingService._slot_pointing_up_start 维护
 
 
 # ---------------------------------------------------------------------------
@@ -276,6 +276,9 @@ class GestureSemantics:
         ])
 
         # 1) OK — 最优先:空间距离 + 数量
+        # 注:fixed.txt B-5 建议加 not thumb_extended 前置,但实测:
+        # FIST 手势下 other_3_extended_relaxed_count = 0(4 指全卷),不会触发 OK;
+        # info.txt 的「握拳误判 OK」场景实际不会发生。加额外检查反而误杀真 OK 手。
         if thumb_touching and other_3_extended_relaxed_count >= 2:
             return self.G_OK
 
@@ -386,7 +389,7 @@ class GestureSemantics:
 
         # 配对:喂 PairingService 当前各 slot 状态,看是否确认
         slot_gestures = {slot: st.last_static_gesture for slot, st in self._slots.items()}
-        self._pairing.update(now, slot_gestures, self.G_POINTING_UP)
+        self._pairing.update(slot_gestures, self.G_POINTING_UP)
 
         # 没出现在本帧的槽位:清理与该手相关的瞬时状态
         # info.txt 三.1:手部消失 hand_lost_cleanup_s 后,也要清空 last_static_gesture + 冷却,
@@ -400,7 +403,6 @@ class GestureSemantics:
                 if now - st.last_seen_monotonic > hand_lost_s:
                     st.pinching = False
                     st.laser_last_xy = None
-                    st.pointing_up_start = None
                     # 重置手势状态,让手重新入画面能立即响应
                     st.last_static_gesture = self.G_NONE
                     st.last_static_at = 0.0
@@ -468,13 +470,9 @@ class GestureSemantics:
             st.laser_last_xy = None
 
         # ----- 2) 一次性静态手势（带冷却） -----
-        # 单人模式：仅 A 槽触发（用户操作的主手）。
-        # 双人模式：A 和 B 两槽都能触发全部 7 个手势（slot 仅用于诊断/UI）。
-        # 这样所有 7 个新手势在任何模式下都能用。
-        produce_static = (
-            (is_single and slot == "A") or
-            (not is_single and slot in ("A", "B"))
-        )
+        # produce_static 已由 _resolve_role_flags 给出,这里不要再覆盖(fixed.txt A-1)
+        # info.txt 六.1:角色映射集中在 _resolve_role_flags,不允许在 _process_one_hand
+        # 内部再写一遍,否则改 mode/slot 规则要改两处。
 
         # 自动重置 last_static_gesture:当用户把手放下回到 NONE 持续 static_reset_idle_s 秒,
         # 允许同一手势再次触发(不强制用户先切到别的再切回来)。这是「连点 OK」灵敏度的关键。
@@ -523,7 +521,10 @@ class GestureSemantics:
         st.last_static_gesture = gesture
 
         # ----- 3) 捏合 → 点击（迟滞防抖） -----
-        if produce_pinch:
+        # fixed.txt B-4:OK 手势是「拇-食指尖接触」,恰好也满足 _is_pinching 判定。
+        # 同一帧既 type=gesture:OK 又 cmd=MOUSE_CLICK + MOUSE_DOWN 会重复触发。
+        # 修复:OK 手势帧不进入捏合路径(避免 MOUSE_CLICK 与 OK 派发对冲)。
+        if produce_pinch and gesture != self.G_OK:
             pinch_th = float(sens.get("pinch_threshold", 0.32))
             pinch_rel = float(sens.get("pinch_release", 0.45))
             if not st.pinching and self._is_pinching(lm, pinch_th, pinch_rel):
@@ -554,10 +555,6 @@ class GestureSemantics:
         return events
 
     # ------------------------------------------------------------------
-    # 配对逻辑(info.txt 六.2:已抽到 PairingService,这里只留 deprecated stub)
+    # 配对逻辑完全委托给 PairingService,语义层不再管。
+    # 旧 _update_pairing 方法已删除(B-17,无外部调用方依赖)。
     # ------------------------------------------------------------------
-    def _update_pairing(self, now: float) -> None:  # pragma: no cover
-        # 旧 API,保留为 deprecated stub。新逻辑在 process() 里直接调
-        # self._pairing.update(),不再用本方法。
-        slot_gestures = {slot: st.last_static_gesture for slot, st in self._slots.items()}
-        self._pairing.update(now, slot_gestures, self.G_POINTING_UP)

@@ -41,7 +41,7 @@ def test_update_with_no_pointing_stays_waiting():
     ps = PairingService(_sens(window_ms=5000))
     ps.start()
     now = time.monotonic()
-    confirmed = ps.update(now, {"A": "NONE", "B": "NONE"}, "POINTING_UP")
+    confirmed = ps.update({"A": "NONE", "B": "NONE"}, "POINTING_UP")
     assert confirmed is False
     assert ps.confirmed is False
     assert ps.state == PairingService.PAIRING_WAITING
@@ -52,7 +52,7 @@ def test_update_with_pointing_increments_timer():
     ps.start()
     # 第一次 update: 设 pointing_up_start
     now = time.monotonic()
-    confirmed = ps.update(now, {"A": "POINTING_UP", "B": "NONE"}, "POINTING_UP")
+    confirmed = ps.update({"A": "POINTING_UP", "B": "NONE"}, "POINTING_UP")
     assert confirmed is False
     assert ps._slot_pointing_up_start["A"] == now
 
@@ -63,7 +63,7 @@ def test_update_triggers_confirmation_after_duration():
     now = time.monotonic()
     # 设 pointing_up_start 为 0.6s 前(> 0.5s 阈值)
     ps._slot_pointing_up_start["A"] = now - 0.6
-    confirmed = ps.update(now, {"A": "POINTING_UP", "B": "NONE"}, "POINTING_UP")
+    confirmed = ps.update({"A": "POINTING_UP", "B": "NONE"}, "POINTING_UP")
     assert confirmed is True
     assert ps.confirmed is True
     assert ps.state == PairingService.PAIRING_CONFIRMED
@@ -75,29 +75,33 @@ def test_either_slot_can_confirm():
     now = time.monotonic()
     # B 槽 doing pointing up
     ps._slot_pointing_up_start["B"] = now - 0.6
-    confirmed = ps.update(now, {"A": "NONE", "B": "POINTING_UP"}, "POINTING_UP")
+    confirmed = ps.update({"A": "NONE", "B": "POINTING_UP"}, "POINTING_UP")
     assert confirmed is True
     assert ps.confirmed is True
 
 
-def test_update_after_window_expires_deactivates():
-    """窗口超时后,update 会把 _active 置 False(state 之后变 IDLE)。"""
+def test_update_after_window_expires_sets_expired_state():
+    """fixed.txt A-2:窗口超时后,update 设 _expired=True(保留 _active),
+    state 仍能返回 EXPIRED(而非 IDLE)。"""
     ps = PairingService(_sens(window_ms=500, pointing_up_s=0.5))
     ps.start()
     # 把 _started 设为 1s 前(模拟窗口已过)
     ps._started = time.monotonic() - 1.0
-    # update 时 elapsed_ms = 1000 > 500,deactivate
-    confirmed = ps.update(time.monotonic(), {"A": "POINTING_UP", "B": "NONE"}, "POINTING_UP")
+    # update 时 elapsed_ms = 1000 > 500,触发 expire
+    confirmed = ps.update({"A": "POINTING_UP", "B": "NONE"}, "POINTING_UP")
     assert confirmed is False
-    assert ps.active is False
-    # 窗口过期后 state 回 IDLE(不是 EXPIRED,EXPIRED 是「窗口未过」时的临时态)
+    # A-2:_active 仍为 True,_expired=True → state 返 EXPIRED
+    assert ps.active is True
+    assert ps.state == PairingService.PAIRING_EXPIRED
+    # reset() 后回到 IDLE
+    ps.reset()
     assert ps.state == PairingService.PAIRING_IDLE
 
 
 def test_inactive_update_does_nothing():
     ps = PairingService(_sens())
     # 不 start,直接 update
-    confirmed = ps.update(time.monotonic(), {"A": "POINTING_UP"}, "POINTING_UP")
+    confirmed = ps.update({"A": "POINTING_UP"}, "POINTING_UP")
     assert confirmed is False
     assert ps.confirmed is False
 
