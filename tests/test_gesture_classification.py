@@ -376,3 +376,65 @@ def test_same_gesture_blocked_within_cooldown(monkeypatch):
     e2 = sem.process([lm_ok], [], on_send_text=None)
     assert not any(e.get("gesture") == "OK" for e in e2 if e.get("type") == "gesture"), \
         f"without reset, same gesture should not re-fire, got {e2}"
+
+
+def test_cooldown_blocks_cross_gesture_rapid_fire(monkeypatch):
+    """关键:冷却防止跨手势拥堵。OK → SCISSORS 在 30ms 内会被冷却挡住。
+
+    之前 now*1000.0 >= static_cooldown_until 单位不匹配,冷却形同虚设,
+    A→B 会在 30ms 内连发(用户做 OK 想翻下一页,立刻又做了 SCISSORS 想翻上一页,
+    两个 PPT 命令对冲,用户感觉「拥堵/鬼畜」)。
+    """
+    cfg = load_gesture_config()
+    cfg.raw["operator_mode"] = "single"
+    cfg.raw["dual_roles_swapped"] = False
+    sem = GestureSemantics(cfg)
+    lm_ok = _hand(
+        wrist_xy=(0.3, 0.6),
+        thumb_xy=(0.55, 0.2),
+        index_tip_xy=(0.58, 0.2),
+        middle_tip_xy=(0.65, 0.2),
+        ring_tip_xy=(0.7, 0.2),
+        pinky_tip_xy=(0.75, 0.2),
+    )
+    # 模拟跨手势:Round1 触发 OK,Round2 立刻切到 SCISSORS(同一只手)
+    # 由于冷却,Round2 应该被压住
+    monkeypatch.setattr(sem, "_classify_static", lambda lm: sem.G_OK)
+    e1 = sem.process([lm_ok], [], on_send_text=None)
+    assert any(e.get("gesture") == "OK" for e in e1 if e.get("type") == "gesture")
+    # Round2:立刻切到 SCISSORS(monkeypatch 返回 SCISSORS,last_static_gesture 仍为 OK)
+    monkeypatch.setattr(sem, "_classify_static", lambda lm: sem.G_SCISSORS)
+    e2 = sem.process([lm_ok], [], on_send_text=None)
+    gesture_e2 = [e for e in e2 if e.get("type") == "gesture"]
+    assert gesture_e2 == [], f"cross-gesture within cooldown should be blocked, got {gesture_e2}"
+
+
+def test_cooldown_unit_consistency():
+    """回归测试:now(time.monotonic 秒)和 static_cooldown_until(秒)必须同单位比较。
+
+    之前的 bug 是 `now * 1000.0 >= static_cooldown_until`,单位不匹配,
+    冷却永远 PASS。
+    """
+    cfg = load_gesture_config()
+    sem = GestureSemantics(cfg)
+    # 模拟:刚触发完,设置 cooldown 到 5 秒后
+    import time as _time
+    sem._slots["A"].static_cooldown_until = _time.monotonic() + 5.0
+    # 应该被冷却挡住
+    # 直接调 _process_one_hand 检查
+    from pc_gesture.semantics import HandState
+    sens = cfg.sensitivity
+    lm = _hand(
+        wrist_xy=(0.3, 0.6),
+        thumb_xy=(0.55, 0.2),
+        index_tip_xy=(0.58, 0.2),
+        middle_tip_xy=(0.65, 0.2),
+        ring_tip_xy=(0.7, 0.2),
+        pinky_tip_xy=(0.75, 0.2),
+    )
+    sem._classify_static = lambda lm: sem.G_OK
+    events = sem._process_one_hand(
+        lm, "A", sem._slots["A"], sens, _time.monotonic(), None
+    )
+    gesture_e = [e for e in events if e.get("type") == "gesture"]
+    assert gesture_e == [], f"cooldown should block, got {gesture_e}"

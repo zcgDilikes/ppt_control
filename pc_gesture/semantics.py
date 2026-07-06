@@ -376,7 +376,9 @@ class GestureSemantics:
             self.G_FIST, self.G_PALM,
         ) and gesture != st.last_static_gesture:
             cooldown_ms = int(sens.get("gesture_cooldown_ms", 400))  # 默认 400ms(原 800ms 太慢)
-            if now * 1000.0 >= st.static_cooldown_until and cooldown_ms > 0:
+            # 修复:now 是 time.monotonic() 秒,static_cooldown_until 也是秒。直接比较,不要乘 1000。
+            # 旧逻辑 now * 1000.0 >= static_cooldown_until 单位不匹配,冷却形同虚设。
+            if now >= st.static_cooldown_until and cooldown_ms > 0:
                 events.append({
                     "type": "gesture",
                     "gesture": gesture,
