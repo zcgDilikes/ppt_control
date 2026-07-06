@@ -89,13 +89,15 @@ class HandState:
 class GestureSemantics:
     """状态机 + 分类器。"""
 
-    # 静态手势类别
+    # 静态手势类别(机器友好 enum,UI 通过 _GESTURE_META 映射到中文 + emoji)
     G_NONE = "NONE"
-    G_FIST = "FIST"
-    G_PALM = "PALM"
-    G_POINTING_UP = "POINTING_UP"
-    G_THUMBS_UP = "THUMBS_UP"
-    G_THUMBS_DOWN = "THUMBS_DOWN"
+    G_OK = "OK"                          # 拇指+食指圈,中/无名/小指伸
+    G_L_SIGN = "L_SIGN"                  # 拇+食指伸(分开),其它卷
+    G_THREE_FINGERS = "THREE_FINGERS"    # 拇+食+中伸,无名+小卷
+    G_POINTING_UP = "POINTING_UP"        # 仅食指伸
+    G_SCISSORS = "SCISSORS"              # 食+中伸,其它卷
+    G_FIST = "FIST"                      # 全卷
+    G_PALM = "PALM"                      # 全伸
 
     def __init__(self, cfg: GestureConfig):
         self.cfg = cfg
@@ -178,48 +180,82 @@ class GestureSemantics:
         return lm[tip_idx].y < lm[pip_idx].y - margin
 
     def _classify_static(self, lm) -> str:
-        """返回 FIST / PALM / POINTING_UP / THUMBS_UP / THUMBS_DOWN / NONE。
+        """返回 7 个新 enum 之一(NONE / OK / L_SIGN / THREE_FINGERS / POINTING_UP / SCISSORS / FIST / PALM)。
 
-        优先级：PALM → THUMBS_UP/DOWN → FIST → POINTING_UP。
-        拇指向手势优先于握拳（握拳的姿态同时满足 4 指卷曲，但拇指朝向有区分意义）。
+        优先级(从最特异到最普通):
+          1. OK          — 拇-食指尖接触 + 中/无名/小指 >= 2 指伸(软阈值)
+          2. L_SIGN      — 拇横向伸 + 食指伸 + 中/无名/小指卷 + 拇-食指分开
+          3. THREE_FINGERS — 拇横向伸 + 食+中伸 + 无名+小指卷
+          4. SCISSORS    — 拇卷 + 食+中伸 + 无名+小指卷
+          5. POINTING_UP — 拇卷 + 仅食指伸 + 中/无名/小指卷
+          6. FIST        — 拇卷 + 食指卷 + 中/无名/小指卷
+          7. PALM        — 拇横向伸 + 4 指都伸
         """
         size = self._hand_size(lm)
 
-        index_ext = self._finger_extended(lm, INDEX_TIP, INDEX_PIP)
-        middle_ext = self._finger_extended(lm, MIDDLE_TIP, MIDDLE_PIP)
-        ring_ext = self._finger_extended(lm, RING_TIP, RING_PIP)
-        pinky_ext = self._finger_extended(lm, PINKY_TIP, PINKY_PIP)
+        # 拇指状态
+        thumb_index_tip_dist = _dist(
+            lm[THUMB_TIP].x, lm[THUMB_TIP].y,
+            lm[INDEX_TIP].x, lm[INDEX_TIP].y,
+        )
+        thumb_index_mcp_dist = _dist(
+            lm[THUMB_TIP].x, lm[THUMB_TIP].y,
+            lm[INDEX_MCP].x, lm[INDEX_MCP].y,
+        )
+        thumb_touching = thumb_index_tip_dist < 0.08 * size
+        thumb_extended = thumb_index_mcp_dist > 0.18 * size
 
-        index_curled = self._finger_curled(lm, INDEX_TIP, INDEX_PIP)
-        middle_curled = self._finger_curled(lm, MIDDLE_TIP, MIDDLE_PIP)
-        ring_curled = self._finger_curled(lm, RING_TIP, RING_PIP)
-        pinky_curled = self._finger_curled(lm, PINKY_TIP, PINKY_PIP)
-        all_curled = index_curled and middle_curled and ring_curled and pinky_curled
+        # 4 指状态(OK 软阈值 -0.015,其它严守 -0.025)
+        def ext_strict(tip_idx, pip_idx):
+            return lm[tip_idx].y < lm[pip_idx].y - 0.025
+        def ext_relaxed(tip_idx, pip_idx):
+            return lm[tip_idx].y < lm[pip_idx].y - 0.015
+        def curled(tip_idx, pip_idx):
+            return lm[tip_idx].y > lm[pip_idx].y + 0.005
 
-        # 1) 张掌：四指全部伸直
-        if index_ext and middle_ext and ring_ext and pinky_ext:
-            return self.G_PALM
+        index_ext = ext_strict(INDEX_TIP, INDEX_PIP)
+        middle_ext = ext_strict(MIDDLE_TIP, MIDDLE_PIP)
+        ring_ext = ext_strict(RING_TIP, RING_PIP)
+        pinky_ext = ext_strict(PINKY_TIP, PINKY_PIP)
 
-        thumb_tip_y = lm[THUMB_TIP].y
-        wrist_y = lm[WRIST].y
+        middle_curled = curled(MIDDLE_TIP, MIDDLE_PIP)
+        ring_curled = curled(RING_TIP, RING_PIP)
+        pinky_curled = curled(PINKY_TIP, PINKY_PIP)
 
-        # 2) 竖拇指：拇指尖明显高于 wrist；其他四指卷曲
-        thumb_high = thumb_tip_y < wrist_y - 0.08
-        if thumb_high and all_curled:
-            return self.G_THUMBS_UP
+        # OK 软阈值:中/无名/小指 >= 2 指 soft-extended
+        other_3_extended_relaxed_count = sum([
+            ext_relaxed(MIDDLE_TIP, MIDDLE_PIP),
+            ext_relaxed(RING_TIP, RING_PIP),
+            ext_relaxed(PINKY_TIP, PINKY_PIP),
+        ])
 
-        # 3) 拇指向下：拇指尖明显低于 wrist；其他四指卷曲
-        thumb_low = thumb_tip_y > wrist_y + 0.10
-        if thumb_low and all_curled:
-            return self.G_THUMBS_DOWN
+        # 1) OK — 最优先:空间距离 + 数量
+        if thumb_touching and other_3_extended_relaxed_count >= 2:
+            return self.G_OK
 
-        # 4) 握拳：四指全部卷曲（且不满足竖/拇指向下）
-        if all_curled:
+        # 2) L_SIGN — 拇横向 + 食指伸 + 其它卷 + 拇-食指分开
+        if thumb_extended and index_ext and middle_curled and ring_curled and pinky_curled and not thumb_touching:
+            return self.G_L_SIGN
+
+        # 3) THREE_FINGERS — 拇横向 + 食+中伸 + 无名+小卷
+        if thumb_extended and index_ext and middle_ext and ring_curled and pinky_curled:
+            return self.G_THREE_FINGERS
+
+        # 4) SCISSORS — 拇卷 + 食+中伸 + 无名+小卷
+        if not thumb_extended and index_ext and middle_ext and ring_curled and pinky_curled:
+            return self.G_SCISSORS
+
+        # 5) POINTING_UP — 拇卷 + 仅食指伸
+        if not thumb_extended and index_ext and middle_curled and ring_curled and pinky_curled:
+            return self.G_POINTING_UP
+
+        # 6) FIST — 拇卷 + 食指卷 + 中/无名/小卷
+        if not thumb_extended and not index_ext and middle_curled and ring_curled and pinky_curled:
             return self.G_FIST
 
-        # 5) 食指上指：仅食指伸直，其余卷曲
-        if index_ext and middle_curled and ring_curled and pinky_curled:
-            return self.G_POINTING_UP
+        # 7) PALM — 拇横向 + 4 指都伸
+        if thumb_extended and index_ext and middle_ext and ring_ext and pinky_ext:
+            return self.G_PALM
 
         return self.G_NONE
 
