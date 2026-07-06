@@ -227,11 +227,14 @@ class GestureBridge(QObject):
         via ``engine.save_config()``, and asks the live semantics module to
         reload so the change takes effect immediately.
         """
-        eng = self._ensure()
-        eng.cfg.dual_roles_swapped = bool(swapped)
-        eng.save_config()
-        if eng._semantics is not None:
-            eng._semantics.reload_config(eng.cfg)
+        try:  # error.txt [9]:加 try/except 防止异常穿透到 UI
+            eng = self._ensure()
+            eng.cfg.dual_roles_swapped = bool(swapped)
+            eng.save_config()
+            if eng._semantics is not None:
+                eng._semantics.reload_config(eng.cfg)
+        except Exception:
+            pass
 
     # --------------------------------------------------------------- access
 

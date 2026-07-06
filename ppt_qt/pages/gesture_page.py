@@ -395,7 +395,10 @@ class GesturePage(QWidget):
                 spin.setDecimals(decimals)
                 spin.setValue(current)
             spin.setSuffix(f" {suffix}" if suffix else "")
-            spin.valueChanged.connect(lambda v, k=key: self._on_sens_changed(k, v))
+            # error.txt [33]:QTimer debounce 500ms,避免拖动时 ~30 次同步写盘
+            spin.valueChanged.connect(
+                lambda v, k=key, s=spin: self._debounced_sens_change(k, v, s)
+            )
             self._sens_spins[key] = spin
             row.addWidget(spin, 1)
             sens_inner.addLayout(row)
@@ -447,7 +450,11 @@ class GesturePage(QWidget):
             # > 100ms 降到 0.25x。状态栏提示用户。
             scale = getattr(self, "_preview_scale", 1.0)
             t0 = time.perf_counter()
-            img = QImage(snap.frame_rgb, snap.frame_w, snap.frame_h, QImage.Format_RGB888)
+            # error.txt [17]:QImage 不复制 buffer,引擎线程下一帧覆写时预览花屏。
+            # bytes() 复制一份内存,确保 QImage 不引用引擎的 buffer。
+            img = QImage(
+                bytes(snap.frame_rgb), snap.frame_w, snap.frame_h, QImage.Format_RGB888
+            )
             target_w = max(1, int(self._preview_label.width() * scale))
             target_h = max(1, int(target_w * snap.frame_h / max(snap.frame_w, 1)))
             scaled = img.scaled(target_w, target_h, Qt.KeepAspectRatio, Qt.SmoothTransformation)
@@ -546,18 +553,21 @@ class GesturePage(QWidget):
         if g == self._current_gesture:
             return  # 已高亮
         self._current_gesture = g
-        # 1. 图卡对应行
-        if g in self._cheat_rows:
-            self._cheat_rows[g].setStyleSheet(
-                "background:rgba(34,197,94,0.4);border-radius:6px;"
-            )
-            QTimer.singleShot(2000, lambda gg=g: self._cheat_rows[gg].setStyleSheet(""))
-        # 2. 映射下拉行
-        if g in self._binding_rows:
-            self._binding_rows[g].setStyleSheet(
-                "background:rgba(34,197,94,0.4);border-radius:6px;"
-            )
-            QTimer.singleShot(2000, lambda gg=g: self._binding_rows[gg].setStyleSheet(""))
+        # error.txt [19]:race condition。第二次触发会覆盖第一次的清除时刻,
+        # 导致高亮闪一下就灭。保存 timer 实例,新一次高亮前先 stop 旧 timer。
+        for row_dict in (self._cheat_rows, self._binding_rows):
+            if g in row_dict:
+                row = row_dict[g]
+                # stop 旧清除 timer(如果有)
+                prev = getattr(row, "_clear_timer", None)
+                if prev is not None:
+                    prev.stop()
+                row.setStyleSheet("background:rgba(34,197,94,0.4);border-radius:6px;")
+                timer = QTimer()
+                timer.setSingleShot(2000)
+                timer.timeout.connect(lambda r=row: r.setStyleSheet(""))
+                timer.start()
+                row._clear_timer = timer  # 保持引用防 GC
         # 3. 试用当前识别
         self._trial_now.setText(_GESTURE_NAME.get(g, g))
         self._trial_now.setStyleSheet("color:#22c55e;font-size:14px;font-weight:600;")
@@ -599,6 +609,38 @@ class GesturePage(QWidget):
             self._cfg.raw["sensitivity"] = {}
         self._cfg.raw["sensitivity"][key] = value
         self._bridge.save()
+
+    def _debounced_sens_change(self, key: str, value, spin) -> None:
+        """error.txt [33]:QTimer debounce 500ms 合并连续 spinbox 变化。
+
+        拖动 spinbox 时每次 valueChanged 都同步写盘会卡主线程
+        (~30 次/秒),用单 timer 防抖后只在最后一次写一次。
+        """
+        timer = getattr(self, "_sens_debounce_timers", None)
+        if timer is None:
+            self._sens_debounce_timers = {}
+        # 取消旧 timer
+        old = self._sens_debounce_timers.get(key)
+        if old is not None:
+            old.stop()
+        # 启动新 timer(记下 callback 以便 flush)
+        t = QTimer(self)
+        t.setSingleShot(True)
+        t.setInterval(500)
+        t._pending = (key, value)  # 记下要写的内容
+        t.timeout.connect(lambda: self._on_sens_changed(key, value))
+        t.start()
+        self._sens_debounce_timers[key] = t
+
+    def _flush_sens_debounce(self) -> None:
+        """测试用:立即同步所有未触发的 spinbox 防抖写盘。"""
+        timers = getattr(self, "_sens_debounce_timers", {})
+        for t in list(timers.values()):
+            t.stop()
+            # 主动调用 callback
+            key, value = t._pending
+            self._on_sens_changed(key, value)
+        self._sens_debounce_timers = {}
 
     def _on_debug_log_toggled(self, on: bool) -> None:
         if "sensitivity" not in self._cfg.raw or not isinstance(self._cfg.raw["sensitivity"], dict):

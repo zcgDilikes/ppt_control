@@ -85,7 +85,11 @@ def _ppt_show_view():
     if not _ensure_pywin32():
         return None
     try:
-        app = _wc.GetObject("PowerPoint.Application")
+        # error.txt [7]:用 GetActiveObject 替代 GetObject(class=),只获取已运行的
+        # PPT 实例,不会创建幽灵 PowerPoint.exe 进程。
+        # GetObject(path, clsctx) 会在没运行时创建空实例。
+        clsctx = getattr(_wc, "CLSCTX_LOCAL_SERVER", 0x4)
+        app = _wc.GetActiveObject("PowerPoint.Application", clsctx)
         windows = app.SlideShowWindows
         if windows.Count < 1:
             return None

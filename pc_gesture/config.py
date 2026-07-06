@@ -250,8 +250,8 @@ class GestureConfig:
             return False
         for k in deprecated:
             bindings.pop(k, None)
-        # 反向同步
-        self.bindings = {k: v for k, v in bindings.items() if k in self.bindings or k in GESTURES}
+        # 反向同步。error.txt [34]:等价于 `if k in GESTURES`(`self.bindings` 初始值已包含全部 GESTURES)
+        self.bindings = {k: v for k, v in bindings.items() if k in GESTURES}
         self.raw["bindings"] = dict(self.bindings)
         # 强制重置教学标志
         self.tutorial_done = False

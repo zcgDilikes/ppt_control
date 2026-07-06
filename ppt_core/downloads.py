@@ -196,7 +196,7 @@ class DownloadManager:
 
             resp = requests.get(url, stream=True, timeout=_DEFAULT_TIMEOUT)
             resp.raise_for_status()
-
+            # error.txt [10]:显式 close 连接,避免 with open 抛 IOError 时连接池泄露
             try:
                 with open(abs_path, "wb") as f:
                     for chunk in resp.iter_content(chunk_size=_CHUNK_SIZE):
@@ -208,6 +208,13 @@ class DownloadManager:
                     if os.path.isfile(abs_path):
                         os.unlink(abs_path)
                 except OSError:
+                    pass
+            finally:
+                # error.txt [10]:确保连接 close(异常路径也跑)
+                try:
+                    resp.close()
+                except Exception:
+                    pass
                     pass
                 return
 

@@ -299,14 +299,26 @@ class PptQtApp:
         self._downloads.open_folder()
 
     def _quit_app(self):
+        # error.txt [16]:逐个 stop + join 避免 C++ 对象删除后子线程还在 emit
         if self._ws is not None:
-            self._ws.stop()
+            try:
+                self._ws.stop()
+            except Exception:
+                pass
+            try:
+                self._ws.join(timeout=1.5)
+            except Exception:
+                pass
         try:
             self._bridge.stop()
         except Exception:
             pass
         try:
             self._notes.stop()
+            # notes worker 是 PptNotesWorker 实例,有 _thread
+            t = getattr(self._notes, "_thread", None)
+            if t is not None and t.is_alive():
+                t.join(timeout=1.5)
         except Exception:
             pass
         self._win.close()

@@ -135,6 +135,8 @@ def test_dispatch_many():
     d = CommandDispatcher(m, p)
     n = d.dispatch_many(['{"cmd":"NEXT_PAGE"}', "bad", '{"cmd":"PREV_PAGE"}'])
     assert n == 2
+    # dispatch() 现在是异步(后台线程池),等待完成再断言
+    d._executor.shutdown(wait=True)
     assert [c["cmd"] for c in p.calls] == ["NEXT_PAGE", "PREV_PAGE"]
 
 
@@ -151,4 +153,6 @@ def test_dispatch_is_thread_safe():
         t.start()
     for t in threads:
         t.join()
+    # [8] dispatch 派到 ThreadPoolExecutor,等所有任务完成
+    d._executor.shutdown(wait=True)
     assert len(p.calls) == 400

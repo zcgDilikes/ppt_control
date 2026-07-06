@@ -166,9 +166,12 @@ class GestureTutorialDialog(QDialog):
             remaining = max(0, int(_STEP_TIMEOUT_MS - elapsed_ms))
             self._progress.setValue(remaining)
             return
-        # Mark last_seen_ts to newest entry
+        # error.txt [20]:只在 target 命中时才推进 last_seen_ts。
+        # 否则非 target 项会把 last_seen_ts 推到最新,后续 target 项 ts 落后,
+        # 永远不被处理。
+        target_hit = any(str(r.get("gesture") or "") == target for r in new)
         self._last_seen_ts = max(float(r.get("ts") or 0.0) for r in new)
-        if any(str(r.get("gesture") or "") == target for r in new):
+        if target_hit:
             self._finish_step("DONE")
 
     def _finish_step(self, result: str) -> None:

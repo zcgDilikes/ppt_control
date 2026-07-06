@@ -10,6 +10,7 @@ websocket reader thread and any other worker concurrently.
 from __future__ import annotations
 
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable, Optional
 
 from .ws_messages import is_laser_delta, is_mouse_click, parse
@@ -61,17 +62,22 @@ class CommandDispatcher:
         self._on_restore = on_restore
         self._on_client_settings = on_client_settings
         self._lock = threading.Lock()
+        # error.txt [8]:execute 派到后台线程池,避免持锁调 COM 卡住激光
+        self._executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="dispatch")
 
     # ------------------------------------------------------------------ public
 
     def dispatch(self, d: dict) -> None:
         """Dispatch one parsed command dict to the appropriate handler.
 
-        Acquires the internal lock so concurrent calls from multiple
-        threads are serialized. Unknown commands are silently ignored.
+        error.txt [8]:锁只保护「读 dict + 选 cmd」,实际 execute 用
+        ThreadPoolExecutor 派出去(避免持锁调 COM 卡激光)。
         """
         with self._lock:
-            self._dispatch_locked(d)
+            cmd = d.get("cmd")
+        # 锁外执行,避免持锁调 GetObject / 鼠标 / COM 卡住后续 dispatch
+        if cmd:
+            self._executor.submit(self._dispatch_locked, d)
 
     def dispatch_many(self, raw_messages: list[str]) -> int:
         """Parse and dispatch a list of raw JSON strings.

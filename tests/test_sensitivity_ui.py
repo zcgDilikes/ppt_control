@@ -112,6 +112,8 @@ def test_change_spinbox_writes_to_cfg_and_saves():
     bridge.save_count = 0
     spin = page._sens_spins["gesture_cooldown_ms"]
     spin.setValue(750)
+    # [33] debounce 500ms,测试时立即 flush
+    page._flush_sens_debounce()
     assert bridge.cfg.sensitivity["gesture_cooldown_ms"] == 750
     assert bridge.save_count == 1
 
@@ -120,6 +122,8 @@ def test_change_float_spinbox_writes_to_cfg():
     page, bridge = _make_page()
     spin = page._sens_spins["ext_strict_y"]
     spin.setValue(0.04)
+    # [33] debounce 500ms,测试时立即 flush
+    page._flush_sens_debounce()
     assert abs(bridge.cfg.sensitivity["ext_strict_y"] - 0.04) < 1e-9
 
 
@@ -195,6 +199,8 @@ def test_persistence_across_page_reload(tmp_path):
     page = GesturePage(bridge=bridge)
     # 改 spinbox
     page._sens_spins["gesture_cooldown_ms"].setValue(1234)
+    # [33] debounce 500ms,测试时立即 flush
+    page._flush_sens_debounce()
     # 验证磁盘
     cfg2 = load_gesture_config(path=str(cfg_path))
     assert cfg2.sensitivity["gesture_cooldown_ms"] == 1234

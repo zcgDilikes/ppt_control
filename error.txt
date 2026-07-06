@@ -1,0 +1,393 @@
+代码 Bug 报告(error.txt)
+==========================
+
+扫描范围:整个项目 ~9200 行 Python 源码
+  - pc_gesture/    (6 文件,1447 行)
+  - ppt_core/      (10 文件,2306 行)
+  - ppt_qt/        (15 文件,2479 行)
+  - ppt_pc_client.py (1 文件,2803 行)
+
+扫描方式:三个子 agent 并行读文件 + 主 agent 串行分析 + pytest 全套测试。
+测试结果:**191 个测试全部通过** — 也就是说这些 bug 都是测试覆盖不到的运行时问题。
+
+严重度图例:
+  [CRITICAL] 用户可见功能失效 / 安全风险 / 数据丢失
+  [MAJOR]    稳定性 / 性能 / 资源问题,可能在特定场景崩溃
+  [MINOR]    边界 / 死代码 / 小问题,通常无即时影响
+
+============================================================
+一、CRITICAL 级 bug(必修)
+============================================================
+
+[1] OPEN_PPT 创建 0 字节 .pptx 文件,PowerPoint 打不开
+    文件: ppt_core/ppt_executor.py:363-412 (_open_ppt)
+    现象: tempfile.mkstemp(suffix=".pptx") 创建 0 字节空文件
+          os.startfile 把空文件交给 PowerPoint 失败
+          失败被外层 except Exception: pass 吞掉
+    触发: 手机端发 OPEN_PPT 且没带 path 字段(gesture_bridge 写死 path="")
+    修复: 用 python-pptx 创建真实空演示文稿
+          或 comtypes.client.CreateObject("PowerPoint.Application") 后保存
+
+[2] SCREENSHOT 同秒并发覆盖 + 阻塞鼠标线程 200ms
+    文件: ppt_pc_client.py:876
+    现象: 文件名 f"screen_{int(time.time())}.png" 精度只到秒
+          同秒内连发两条 SCREENSHOT 写同一文件 + 卡线程
+    触发: 手机端快速点两次截屏
+    修复: 改 time.time_ns() 或加锁串行化
+
+[3] execute_command 同步执行 SCREENSHOT,鼠标线程阻塞
+    文件: ppt_pc_client.py:816, 873-884
+    现象: pyautogui.screenshot() 在 mouse_render_thread 同步执行 (~50-200ms)
+          阻塞期间 LASER/MOUSE_CLICK 全部排队
+    触发: 截屏时持续激光
+    修复: 移到后台线程,完成后再 push SCREENSHOT_DONE
+
+[4] LASER 缺 dx/dy 时走绝对定位,鼠标瞬移 + 反复跳点
+    文件: ppt_pc_client.py:987-995
+    现象: dx is None and dy is None 时把整个 dict 序列化进 latest_msg
+          mouse_render_thread 读 data.get("x")/("y") 绝对定位
+    触发: 手势模块发 {"cmd":"LASER","x":0.5,"y":0.5} 无 dx/dy
+    修复: 显式三分支:有 dx/dy 走累加,有 x/y 走绝对,都没有则忽略
+
+[5] WS 服务端 LASER/MOUSE_CLICK 消息无 roomId 校验
+    文件: ppt_pc_client.py:1137-1142 (websocket_client_loop)
+    现象: 只对 MINI_HELLO/ONLINE/OFFLINE 做了 room 校验
+          LASER/MOUSE_CLICK 直接 dispatch,跨房间污染
+    触发: 同 SpringBoot 实例内 A/B 房间错位转发
+    修复: 入 LASER/MOUSE_CLICK 前 _presence_room_id_matches 校验
+
+============================================================
+二、MAJOR 级 bug(应修)
+============================================================
+
+[6] pynput mouse Controller.position 在 Windows 是只读
+    文件: ppt_core/mouse_controller.py:78, 92
+    现象: pynput 在 Windows 上 controller.position = (x, y) 抛 AttributeError
+          set_absolute 路径完全失效,只能走 pyautogui
+          pyautogui.FailSafeException 也被 except 吞掉
+    修复: 改用 ctypes + win32api.SetCursorPos,或累加 dx/dy 逼近
+
+[7] GetObject(class=) 在 PPT 未运行时**创建**隐藏 PPT 实例
+    文件: ppt_core/ppt_executor.py:78-94 (_ppt_show_view)
+    现象: _wc.GetObject("PowerPoint.Application") 会创建空 PowerPoint.exe
+          每次触发 FULL_SCREEN 留一个幽灵进程
+    修复: 改用 _wc.GetActiveObject(..., result=...)(只获取不创建)
+
+[8] command_dispatcher 持锁期内执行 COM,所有命令阻塞
+    文件: ppt_core/command_dispatcher.py:73-74
+    现象: with self._lock: self._dispatch_locked(d) 把派发+执行都上锁
+          GetObject 卡住时,激光笔 dx/dy 全部排队
+    修复: 锁只保护"读 dict + 选 cmd",实际 execute 用 ThreadPoolExecutor 派出去
+
+[9] reload_config 未被 try/except 包裹(唯一漏点)
+    文件: ppt_core/gesture_bridge.py:233-234 (swap_roles)
+    现象: 其他 callback 都 except Exception: pass,这里漏了
+    修复: 加 try/except
+
+[10] requests.get(...) 成功路径未显式 close,连接池易耗尽
+     文件: ppt_core/downloads.py:197-204
+     现象: resp 进入 with open 块,iter_content 完成时 GC 回收
+           但 with open 抛 IOError 时,resp.close() 不会被调用
+     修复: 外层 try/finally: resp.close() 或 contextlib.closing(resp)
+
+[11] ws_client backoff 上限 30s 永远到不了,卡在 16s
+     文件: ppt_core/ws_client.py:74-77, 240-246
+     现象: delay = min(delay * 2.0, 16.0) 永远 ≤ 16
+           wait_s = min(delay, 30.0) 也 ≤ 16
+           30s 常量是死代码
+     修复: 删 30.0 或把 _BACKOFF_CAP_S 调到 ≥ 30
+
+[12] VERSION_MISMATCH fire-and-forget 任务未持有引用
+     文件: ppt_core/ws_client.py:290-294
+     现象: asyncio.ensure_future(ws.send(...)) 没存 task 引用
+           event loop 关闭时 task 被 GC,警告永远发不到手机
+     修复: task 存 self._pending,gather 等待
+
+[13] _dispatch_locked 持锁执行 COM,详见 [8]
+
+[14] os.startfile 非 Windows 平台崩溃
+     文件: ppt_qt/app.py:211-217
+     现象: macOS/Linux 上 os.startfile 不存在,AttributeError 被 except 吞
+     修复: 按 sys.platform 分支处理
+
+[15] 私有属性穿透 GestureBridge._on_status/_on_fps
+     文件: ppt_qt/app.py:75-76
+     现象: 直接赋值私有属性,未来改 Signal 会静默失效
+     修复: 加 set_status_callback / set_fps_callback 公共方法
+
+[16] 退出时不 join WsClient / GestureBridge / PptNotesWorker
+     文件: ppt_qt/app.py:301-313 (_quit_app)
+     现象: self._ws.stop() 后立即 self._win.close()
+           asyncio 线程 / worker 还在跑,C++ 对象已 delete 后 emit
+           偶发 RuntimeError: wrapped C/C++ object of type X has been deleted
+     修复: 逐个 stop() + join(timeout)
+
+[17] QImage 不复制 buffer,引擎线程覆写时预览花屏
+     文件: ppt_qt/pages/gesture_page.py:432-468
+     现象: QImage(data, w, h, format) 不复制,直接引用 snap.frame_rgb
+           engine 线程下一帧覆写 buffer,QImage.scaled() 期间读到撕裂内存
+     触发: 启动手势后预览
+     修复: QImage(bytes(snap.frame_rgb), ...).copy() 强制拷贝
+
+[18] QFrame.__dict__ 注入属性
+     文件: ppt_qt/pages/gesture_page.py:254, 258, 642
+     现象: row.__dict__["_action_lbl"] = ... 在某些 PySide6 6.5+ 被 GC 丢弃
+     修复: 改 self._cheat_row_labels: Dict[str, QLabel] = {}
+
+[19] 双高亮路径 race condition(2s 内重复触发会闪烁)
+     文件: ppt_qt/pages/gesture_page.py:541-562
+     现象: _update_sync_highlight 与 _poll_bridge_gestures 都用
+           setStyleSheet + QTimer.singleShot(2000, clear)
+           第二次触发会覆盖第一次的清除时刻,导致高亮闪一下就灭
+     修复: QTimer 实例成员保存"清除时刻",新一次高亮前先 stop 旧 timer
+
+[20] 教学引导 _last_seen_ts 推进策略错失 target
+     文件: ppt_qt/pages/gesture_tutorial_dialog.py:158-172 (_poll_recognition)
+     现象: new 里有非 target 项时也把 _last_seen_ts 推到最新
+           后续 target 项 ts < last_seen_ts,永远不被处理
+     修复: 只在 target 命中时才推进 last_seen_ts
+
+[21] stopwatch reset() 不重启 timer
+     文件: ppt_qt/overlays/timer_overlay.py:103-119
+     现象: stopwatch 模式 reset() 无参,只清零不重启
+           用户期望"重置并继续走表",实际是"归零不计时"
+     修复: stopwatch reset 时 self._timer.start()
+
+[22] LASER 灵敏度双重放大(6x 手感灾难)
+     文件: ppt_pc_client.py:33, 1037
+     现象: pending_laser_dx/dy 已是乘过 sens 的 delta
+           PC 端再 * LASER_SENS 二次放大
+           手机 sens=2 → 实际 2*6=12 倍跳
+     修复: 与移动端约定明确(PC 不再乘,或手机只传未乘 delta)
+
+[23] _ppt_notes_warn_slideshow_once 全局 once 永不重置
+     文件: ppt_pc_client.py:143-154, 516-533
+     现象: _notes_warned_slideshow = True 后永不重置
+           关闭 PPT 再开 → 不再提示
+     修复: 检测到 SlideShowWindows.Count >= 1 时重置
+
+[24] presence_room_id_matches 高频 ONLINE/OFFLINE 抖动让 GUI 闪烁
+     文件: ppt_pc_client.py:1130-1136
+     现象: 配对标题只翻 true/false,无去抖
+     修复: 加 500ms 去抖窗口
+
+[25] download_file 不解析 Content-Disposition,basename 路径穿越
+     文件: ppt_pc_client.py:717-718
+     现象: file_name = os.path.basename(file_url.split("?")[0])
+           恶意 URL "../../etc/passwd" 越界写
+     修复: 用 secure_filename 或正则清洗
+
+[26] mouse_render_thread 异常被 except: pass 吞掉,无任何日志
+     文件: ppt_pc_client.py:1014-1051
+     现象: execute_command 异常 print 也不打,调试极难
+     修复: 改成 except Exception as ex: print(f"[mouse_render] 异常: {ex!r}")
+
+[27] settings 写文件期间未持锁,JSON 内容可能混合状态
+     文件: ppt_pc_client.py:114-124 (_write_settings_file)
+     现象: 多线程并发 set_client_settings 时写文件内容不一致
+     修复: 写文件时持有 settings_lock
+
+[28] _quit_app 主线程 time.sleep(0.3) 卡 Tk mainloop
+     文件: ppt_pc_client.py:2771
+     现象: 0.3s 内 Tk 不处理事件,GUI 无响应
+     修复: self.root.after(300, _finish_quit)
+
+[29] pystray tray_thread 未 join,关闭后 mainloop 残留 RuntimeError
+     文件: ppt_pc_client.py:2667-2671, 2760-2778
+     现象: 主线程 destroy root 后,tray 子线程还在跑
+           再点托盘退出 → root.after 抛 TclError
+     修复: _quit_app 先 tray_icon.stop() + tray_thread.join(timeout=1)
+
+[30] merge_remote_client_settings 中 bool("false") == True
+     文件: ppt_pc_client.py:536-546
+     现象: 手机端若把 ppt_notes_enabled="false" 传过来,变成 True
+     修复: 严格解析 str(x).lower() in ("1","true","yes")
+
+[31] _stop_notes_thread join 超时 1.5s 太长,反复开关导致 COM 竞争
+     文件: ppt_pc_client.py:503-513
+     现象: join 后立即 set _notes_thread = None,旧线程还在跑
+     修复: 缩短超时 0.5s,未退出强制 detach
+
+[32] QTimer.singleShot 闭包持有已 destroy 的 widget
+     文件: ppt_qt/pages/gesture_page.py:554,560,740
+     现象: 1.8s 内关闭主窗口 → timer 触发,RuntimeError
+     修复: 用 QPointer 或 isValid 检查
+
+[33] 灵敏度 spinbox 拖动时每次 valueChanged 同步写 JSON
+     文件: ppt_qt/pages/gesture_page.py:666
+     现象: 拖动 1s 触发 ~30 次同步 IO,主线程卡顿
+     修复: QTimer debounce 500ms
+
+============================================================
+三、MINOR 级 bug(可后修)
+============================================================
+
+[34] migrate_old_bindings 过滤条件冗余(config.py:254)
+     `if k in self.bindings or k in GESTURES` 等价于 `if k in GESTURES`
+
+[35] engine._build_frame_snapshot 硬编码 0.025 / 0.08 / 0.10 阈值
+     (engine.py:344-351)与 semantics._classify_static 不同步,UI 显示脱节
+
+[36] engine._build_frame_snapshot 不按 handedness.score 过滤
+     (engine.py:331-371)semantics.process 过滤了低置信度,snapshot 没有
+
+[37] engine._build_frame_snapshot finger_states["thumb"] 字段计算错
+     (engine.py:365)"thumb_up or (not thumb_down)" 几乎恒为 True
+
+[38] engine._build_frame_snapshot 内部重复 import
+     (engine.py:317) 文件顶部第 34 行已 import,函数内重复
+
+[39] engine.py docstring 写"≤2s",实际 join timeout=2.5
+     (engine.py:17 vs 171)
+
+[40] engine.py __init__ 缺 on_send_text 参数
+     (engine.py:97-108)但 ppt_pc_client.py:2395 传了 on_send_text
+
+[41] engine.py frame_rgb 每帧全帧 .tobytes(),1080p@30fps ~186MB/s 内存流量
+     (engine.py:324)
+
+[42] PairingService 内部用 time.monotonic() 单一时间源后,
+     update 签名变更没在 tests 之外被同步(semantics 已迁移,旧 stub 删除)
+     实际 OK,但 _update_pairing stub 已删 — 调用方需确认
+
+[43] HandState.pointing_up_start 已成 dead field
+     (semantics.py:79) PairingService 自己维护进度,这个字段没人读写
+
+[44] engine.start() 副作用修改 cfg.raw["enabled"] 但不持久化
+     (engine.py:149)UI 期望看到 enabled 状态,实际只活在内存
+
+[45] engine.start() 失败时 self.running 未回滚(实际 start() 在所有验证后才置
+     running=True,所以 OK)— false positive
+
+[46] engine.stop() 不清 _latest_snapshot
+     (engine.py:163-176)latest_snapshot() 仍返回旧帧
+
+[47] thumb_touch_thr * size 在 size 下限 0.05 时阈值仅 0.004
+     (semantics.py:217)握拳时拇-食指尖距离常 < 0.02,可能误判 OK
+
+[48] engine.py landmarker 已加 close() ✓ — 已修复(fixed.txt B-10)
+     engine.py 第 295-300 行 finally 内有 try: landmarker.close()
+
+[49] _BACKOFF_HARD_CAP_S 死代码,见 [11]
+
+[50] _ppt_notes_announced_read_ok 在 ws 关闭时丢更新
+     (ppt_pc_client.py:1147-1153)关闭期间发 PPT_NOTES 静默失败
+
+[51] _notes_thread 并发 CoInitialize 竞争
+     反复开关"演讲者模式"可能让两个 worker 线程同时 init COM
+
+[52] _ppt_notes_broadcast_clear 在禁用状态下仍发空字符串
+     (ppt_pc_client.py:427-431)手机误以为又有空备注
+
+[53] _refresh_qr_display_once PIL 缺失路径已正确处理 ✓ — false positive
+
+[54] pc_gesture.semantics 内部 _process_one_hand 用 _resolve_role_flags 已修复 ✓
+     (A-1 修复,见 fixed.txt 上一轮)
+
+[55] OK 手势同帧触发 MOUSE_CLICK 已修复 ✓
+     (B-4 修复:produce_pinch and gesture != self.G_OK)
+
+[56] downloads.py Connection: close header 缺失
+     实际是 requests 默认行为,加 close 头会更稳
+
+[57] _gesture_save_options 启动失败时 enabled 不回滚
+     启动失败 err 路径未显式回滚 cfg.raw["enabled"]
+
+[58] _ensure_gesture_engine RuntimeError 把 ImportError 详情直接展示
+     (ppt_pc_client.py:2390) 用户看到 Python traceback
+
+[59] psutil.cpu_percent(interval=None) 首次返回 0.0 是已知行为
+     (connect_page.py:94-110) 第二次起正常
+
+[60] _notes_warned_slideshow 全局 once,见 [23]
+
+[61] cmd:LASER 无 dx/dy 时走绝对定位,见 [4]
+
+[62] 反复开关 "演讲者模式" 后旧 worker 未 join 导致 COM 竞争,见 [31]
+
+[63] QPointer 检查缺失导致 timer 触发已 destroy 的 widget,见 [32]
+
+============================================================
+四、已确认无 bug(测试已覆盖,无需修复)
+============================================================
+
+[✓] pc_gesture/semantics.py 与 engine.py 主流程:191 个测试全部通过
+[✓] pc_gesture/pairing.py:12 个测试覆盖 IDLE/WAITING/CONFIRMED/EXPIRED
+[✓] ppt_core/ws_messages.py:纯函数,无 bug
+[✓] ppt_qt/theme.py:无 bug
+[✓] ppt_qt/widgets/*.py:大部分无 bug(已检查)
+[✓] ppt_core/settings.py:merge 策略是设计行为
+[✓] _resolve_role_flags 集中角色映射已修复(六.1)
+[✓] PairingService 抽离已修复(六.2)
+[✓] 二.1 Y 模糊 2D 距离兜底已修复
+[✓] 二.3 L_SIGN 收紧已修复
+[✓] 五.1 魔法数字抽到 cfg.sensitivity 已修复
+[✓] 一.2 MOUSE_DOWN/UP 已修复
+[✓] 一.3 配对 A/B 双 slot 已修复
+[✓] 三.1 hand_leave 清理已修复
+[✓] 三.2 reload_config reset 已修复
+[✓] 五.3 debug_log 开关已修复
+[✓] 五.4 _hand_size 上下限已修复
+[✓] 六.3 laser_smoothing 异常兜底已修复
+[✓] 13 项 fixed.txt 历史问题已修复(commit 64a6d65)
+
+============================================================
+五、修复优先级建议
+============================================================
+
+P0(必修,影响主功能或安全):
+  [1] OPEN_PPT 0 字节文件
+  [2] SCREENSHOT 同秒覆盖
+  [3] SCREENSHOT 阻塞鼠标线程
+  [4] LASER 缺 dx/dy 走绝对
+  [5] LASER/MOUSE_CLICK 无 roomId 校验(安全)
+  [22] LASER 灵敏度双重放大
+  [17] QImage 不复制 buffer(预览崩溃)
+
+P1(应修,稳定性):
+  [6] pynput Windows 只读
+  [7] GetObject 创建幽灵 PPT
+  [8] dispatcher 持锁执行 COM
+  [10] requests 连接池泄露
+  [16] 退出时不 join worker
+  [19] 双高亮 race condition
+  [20] 教学引导 last_seen_ts 错失 target
+  [25] download_file 路径穿越
+  [26] mouse_render 异常无日志
+  [30] bool("false")==True
+  [33] spinbox 同步写 JSON 卡顿
+
+P2(可后修):
+  [9] reload_config 无 try/except
+  [11] _BACKOFF_HARD_CAP_S 死代码
+  [12] VERSION_MISMATCH fire-and-forget
+  [14] os.startfile 非 Windows 崩溃
+  [15] 私有属性穿透
+  [18] QFrame.__dict__ 注入
+  [21] stopwatch reset 不重启
+  [23] _notes_warned_slideshow 不重置
+  [24] presence 抖动无去抖
+  [27] settings 写文件无锁
+  [28] _quit_app time.sleep 卡主线程
+  [29] pystray tray_thread 未 join
+  [31] notes_thread join 超时太长
+  [32] QTimer 闭包持有已 destroy widget
+
+P3(代码债):
+  [34]-[63] minor 级别,见第三节
+
+============================================================
+六、按文件分布
+============================================================
+
+ppt_pc_client.py(2803 行):40 条  —  critical 4 / major 22 / minor 14
+ppt_core/(2306 行):   10 条  —  critical 1 / major 4  / minor 5
+ppt_qt/(2479 行):     ~22 条 —  critical 0 / major 8  / minor ~14
+pc_gesture/(1447 行): 16 条  —  全部 minor(仅 dead field / 硬编码阈值)
+
+bug 密度(每千行):
+  ppt_pc_client.py: 14.3/千行(最差,业务最杂)
+  ppt_core/:         4.3/千行
+  ppt_qt/:           8.9/千行
+  pc_gesture/:       11.0/千行
+============================================================

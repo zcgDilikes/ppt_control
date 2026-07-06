@@ -208,7 +208,10 @@
       "PowerShell(python -m pytest -q 2>&1 | Select-Object -Last 20)",
       "Bash(bash C:/Users/admin_gmail/.claude/plugins/cache/claude-plugins-official/superpowers/6.1.1/skills/subagent-driven-development/scripts/review-package 753ad82 HEAD)",
       "Bash(git reset *)",
-      "Bash(git checkout *)"
+      "Bash(git checkout *)",
+      "Bash(git gc *)",
+      "Bash(ls -la ppt_pc_client.py ppt_qt.py)",
+      "Bash(ls ppt_qt/pages/ ppt_qt/widgets/ ppt_qt/overlays/)"
     ]
   }
 }
