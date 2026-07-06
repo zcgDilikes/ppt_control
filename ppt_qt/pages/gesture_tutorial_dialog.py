@@ -13,7 +13,6 @@ Side effects:
 from __future__ import annotations
 
 import time
-from typing import Optional
 
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
@@ -38,7 +37,6 @@ _TUTORIAL_META = {
 }
 
 _STEP_TIMEOUT_MS = 15000        # 15s per step
-_AUTO_ADVANCE_MS = 1500         # recognized → wait 1.5s before next step
 _FINAL_CLOSE_MS = 800           # all DONE → 0.8s before dialog closes
 _POLL_INTERVAL_MS = 150         # bridge.recent_gestures() poll cadence
 

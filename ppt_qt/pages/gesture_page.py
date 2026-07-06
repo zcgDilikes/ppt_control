@@ -55,8 +55,7 @@ class GesturePage(QWidget):
         self._current_gesture: Optional[str] = None
 
         # ---- frame snapshot 状态 ----
-        self._last_hand_seen_at: float = 0.0   # 最近一次看到手的 wall-clock
-        self._preview_pixmap: Optional[QPixmap] = None  # 缩放后缓存
+        self._last_hand_seen_at: float = 0.0   # 最近一次看到手的 wall-clock (currently unused; reserved for spec §3 boundary #3 timing)
         self._finger_state_prev: Dict[str, bool] = {}   # 上一帧手指状态,避免每帧重绘
         self._preview_scale: float = 1.0  # 自适应降级缩放系数
 
@@ -361,9 +360,8 @@ class GesturePage(QWidget):
         try:
             # Spec §3 边界 #5:自适应降级。如果 setPixmap 耗时 > 50ms 降到 0.5x,
             # > 100ms 降到 0.25x。状态栏提示用户。
-            import time as _t
             scale = getattr(self, "_preview_scale", 1.0)
-            t0 = _t.perf_counter()
+            t0 = time.perf_counter()
             img = QImage(snap.frame_rgb, snap.frame_w, snap.frame_h, QImage.Format_RGB888)
             target_w = max(1, int(self._preview_label.width() * scale))
             target_h = max(1, int(target_w * snap.frame_h / max(snap.frame_w, 1)))
