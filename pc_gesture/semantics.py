@@ -68,6 +68,7 @@ class HandState:
     last_seen_monotonic: float = 0.0
     # 上一次识别的手势类别（用于防抖/冷却）
     last_static_gesture: str = "NONE"                # OK / L_SIGN / THREE_FINGERS / POINTING_UP / SCISSORS / FIST / PALM / NONE
+    last_static_at: float = 0.0                   # 上一次识别到非 NONE 手势的 wall-clock,用于 auto-reset
     static_cooldown_until: float = 0.0
     # 捏合迟滞
     pinching: bool = False
@@ -361,12 +362,20 @@ class GestureSemantics:
             (is_single and slot == "A") or
             (not is_single and slot in ("A", "B"))
         )
+
+        # 自动重置 last_static_gesture:当用户把手放下回到 NONE 持续 ~300ms,
+        # 允许同一手势再次触发(不强制用户先切到别的再切回来)。这是「连点 OK」灵敏度的关键。
+        if gesture != self.G_NONE:
+            st.last_static_at = now
+        elif st.last_static_gesture != self.G_NONE and (now - st.last_static_at) > 0.3:
+            st.last_static_gesture = self.G_NONE  # auto-reset
+
         if produce_static and gesture in (
             self.G_OK, self.G_L_SIGN, self.G_THREE_FINGERS,
             self.G_POINTING_UP, self.G_SCISSORS,
             self.G_FIST, self.G_PALM,
         ) and gesture != st.last_static_gesture:
-            cooldown_ms = int(sens.get("gesture_cooldown_ms", 800))
+            cooldown_ms = int(sens.get("gesture_cooldown_ms", 400))  # 默认 400ms(原 800ms 太慢)
             if now * 1000.0 >= st.static_cooldown_until and cooldown_ms > 0:
                 events.append({
                     "type": "gesture",

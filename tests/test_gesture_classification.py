@@ -309,3 +309,70 @@ def test_single_mode_b_slot_silently_skipped():
     # 单人模式 + B 槽 → 不应该有 type=gesture OK 事件
     gesture_events = [e for e in events if e.get("type") == "gesture" and e.get("gesture") == "OK"]
     assert gesture_events == [], f"single mode B slot should be skipped, got {gesture_events}"
+
+
+# ---- 连点灵敏度:auto-reset last_static_gesture + 降低 cooldown ----
+
+def test_same_gesture_can_re_trigger_after_lift(monkeypatch):
+    """OK → 放下(回 NONE)→ 再 OK → 应该再次触发(不被 rising-edge 锁住)。
+
+    旧逻辑需要用户先切到别的再切回来才能再次触发 OK,体验卡。
+    修复:放下 ~300ms 后 auto-reset last_static_gesture,允许同一手势再次触发。
+    """
+    cfg = load_gesture_config()
+    cfg.raw["operator_mode"] = "single"
+    cfg.raw["dual_roles_swapped"] = False
+    sem = GestureSemantics(cfg)
+    lm_ok = _hand(
+        wrist_xy=(0.3, 0.6),  # wrist.x < 0.5 → slot A (single mode only A)
+        thumb_xy=(0.55, 0.2),
+        index_tip_xy=(0.58, 0.2),
+        middle_tip_xy=(0.65, 0.2),
+        ring_tip_xy=(0.7, 0.2),
+        pinky_tip_xy=(0.75, 0.2),
+    )
+    # Round 1:OK 触发
+    monkeypatch.setattr(sem, "_classify_static", lambda lm: sem.G_OK)
+    e1 = sem.process([lm_ok], [], on_send_text=None)
+    assert any(e.get("gesture") == "OK" for e in e1 if e.get("type") == "gesture")
+    # Round 2(中间帧):NONE → 触发 auto-reset(放下 ~300ms 即可)
+    monkeypatch.setattr(sem, "_classify_static", lambda lm: sem.G_NONE)
+    sem._slots["A"].last_static_at -= 1.0  # 模拟 1s 前(超过 0.3s 阈值)
+    sem._slots["A"].static_cooldown_until = 0  # 同时清掉 cooldown(否则 400ms 内还是触发不了)
+    sem.process([lm_ok], [], on_send_text=None)  # 这一帧 NONE,触发 auto-reset
+    # Round 3:再次 OK → 应该再次触发(因为 last_static_gesture 已被 auto-reset 为 NONE)
+    monkeypatch.setattr(sem, "_classify_static", lambda lm: sem.G_OK)
+    e2 = sem.process([lm_ok], [], on_send_text=None)
+    assert any(e.get("gesture") == "OK" for e in e2 if e.get("type") == "gesture"), \
+        f"after auto-reset OK should re-fire, got {e2}"
+
+
+def test_default_cooldown_is_400ms():
+    """DEFAULT_GESTURE_CONFIG 中 gesture_cooldown_ms 默认 400ms(原 800ms 太慢)。"""
+    # 直接读 DEFAULT,不读磁盘(避免用户已存配置污染)
+    from pc_gesture.config import DEFAULT_GESTURE_CONFIG
+    assert DEFAULT_GESTURE_CONFIG["sensitivity"]["gesture_cooldown_ms"] == 400
+
+
+def test_same_gesture_blocked_within_cooldown(monkeypatch):
+    """rising-edge 机制:即使刚触发过,只要 last_static_gesture 还没 reset,同一手势不重复触发。"""
+    cfg = load_gesture_config()
+    cfg.raw["operator_mode"] = "single"
+    cfg.raw["dual_roles_swapped"] = False  # 显式 reset,不依赖磁盘
+    sem = GestureSemantics(cfg)
+    lm_ok = _hand(
+        wrist_xy=(0.3, 0.6),  # wrist.x < 0.5 → slot A (single mode only A)
+        thumb_xy=(0.55, 0.2),
+        index_tip_xy=(0.58, 0.2),
+        middle_tip_xy=(0.65, 0.2),
+        ring_tip_xy=(0.7, 0.2),
+        pinky_tip_xy=(0.75, 0.2),
+    )
+    monkeypatch.setattr(sem, "_classify_static", lambda lm: sem.G_OK)
+    # Round 1
+    e1 = sem.process([lm_ok], [], on_send_text=None)
+    assert any(e.get("gesture") == "OK" for e in e1 if e.get("type") == "gesture")
+    # Round 2 紧接(不放回 NONE):last_static_gesture 还是 OK,不重复触发
+    e2 = sem.process([lm_ok], [], on_send_text=None)
+    assert not any(e.get("gesture") == "OK" for e in e2 if e.get("type") == "gesture"), \
+        f"without reset, same gesture should not re-fire, got {e2}"

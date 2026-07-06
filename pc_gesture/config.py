@@ -65,8 +65,8 @@ DEFAULT_GESTURE_CONFIG: Dict[str, Any] = {
         "swipe_min_velocity": 0.18,
         "swipe_history_ms": 240,
         "swipe_cooldown_ms": 700,
-        # 一次性手势冷却：握拳/张掌/竖拇指/拇指向下 触发后多久内不重复
-        "gesture_cooldown_ms": 800,
+        # 一次性手势冷却:握拳/张掌/竖拇指/拇指向下 触发后多久内不重复(默认 400ms,老 800ms 太慢)
+        "gesture_cooldown_ms": 400,
         # 托掌：open palm 持续多久后调起 on_send_text
         "palm_hold_ms": 1800,
         # 激光平滑：0 = 不滤波（直接抖动），1 = 上一帧权重 100%（不响应）
