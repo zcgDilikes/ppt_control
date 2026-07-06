@@ -15,15 +15,15 @@ from PySide6.QtWidgets import (
 
 from pc_gesture.config import GESTURES, ACTIONS
 
-# 手势显示：图标 + 中文名
+# 手势显示:枚举 → emoji + 中文名
 _GESTURE_META = {
-    "FIST":         ("✊", "握拳"),
-    "PALM":         ("🖐", "张掌"),
-    "POINTING_UP":  ("☝", "食指上"),
-    "THUMBS_UP":    ("👍", "竖拇指"),
-    "THUMBS_DOWN":  ("👎", "拇指向下"),
-    "SWIPE_LEFT":   ("◀", "挥左"),
-    "SWIPE_RIGHT":  ("▶", "挥右"),
+    "OK":            ("👌", "OK 手势"),
+    "L_SIGN":        ("🤙", "L 手势"),
+    "THREE_FINGERS": ("🤟", "三指"),
+    "POINTING_UP":   ("☝",  "食指"),
+    "SCISSORS":      ("✌",  "剪刀手"),
+    "FIST":          ("✊", "拳头"),
+    "PALM":          ("🖐", "张掌"),
 }
 
 # 动作下拉显示

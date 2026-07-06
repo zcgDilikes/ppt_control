@@ -116,7 +116,7 @@ def test_recent_gestures_records_recognized_gesture(monkeypatch):
     gestures = [r["gesture"] for r in recent]
     actions = [r["action"] for r in recent]
     assert gestures == ["FIST", "PALM"]
-    assert actions == ["BLACK_SCREEN", None]
+    assert actions == ["BLACK_SCREEN", "EXIT"]  # PALM now defaults to EXIT
 
 
 def test_save_persists_bridge_bindings_to_disk(monkeypatch, tmp_path):

@@ -222,7 +222,7 @@ def test_bridge_skips_unbound_gesture():
             on_send_text=lambda: None,
         )
         bridge.cfg.reset_bindings()
-        bridge._on_gesture_event({"type": "gesture", "gesture": "PALM", "slot": "A", "source": "gesture:A"})
+        bridge._on_gesture_event({"type": "gesture", "gesture": "POINTING_UP", "slot": "A", "source": "gesture:A"})
         assert captured == []
     finally:
         gb.GestureEngine = orig_engine

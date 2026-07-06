@@ -27,13 +27,13 @@ from pc_gesture.config import GESTURES
 # Mirrors the dict already used in gesture_page.py but kept local so the
 # dialog can be moved/imported independently.
 _TUTORIAL_META = {
-    "FIST":         ("✊", "握拳",    "四指卷起，拇指压在食指外侧"),
-    "PALM":         ("🖐", "张掌",    "五指全部伸直，掌心朝镜头"),
-    "POINTING_UP":  ("☝", "食指上",  "只伸食指，其它四指卷起"),
-    "THUMBS_UP":    ("👍", "竖拇指",  "拇指指向上方，其它四指卷起"),
-    "THUMBS_DOWN":  ("👎", "拇指向下","拇指指向下方，其它四指卷起"),
-    "SWIPE_LEFT":   ("◀", "挥左",    "张掌，手腕快速向左移"),
-    "SWIPE_RIGHT":  ("▶", "挥右",    "张掌，手腕快速向右移"),
+    "OK":            ("👌", "OK 手势",   "拇指与食指尖相接成圈,其它三指伸直"),
+    "L_SIGN":        ("🤙", "L 手势",   "拇指与食指伸直成 L 形,其它三指卷曲"),
+    "THREE_FINGERS": ("🤟", "三指",     "拇指 + 食指 + 中指伸直,无名指与小指卷曲"),
+    "POINTING_UP":   ("☝",  "食指",     "仅食指伸直,其它四指卷曲"),
+    "SCISSORS":      ("✌",  "剪刀手",   "食指与中指伸直成 V,其它三指卷曲"),
+    "FIST":          ("✊", "拳头",     "五指全部卷曲握紧"),
+    "PALM":          ("🖐", "张掌",     "五指全部伸直,掌心朝镜头"),
 }
 
 _STEP_TIMEOUT_MS = 15000        # 15s per step

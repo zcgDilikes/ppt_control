@@ -99,6 +99,15 @@ class GestureBridge(QObject):
 
     def _ensure(self) -> GestureEngine:
         if self._engine is None:
+            # 首次启动：检测并迁移旧 bindings(THUMBS_UP/DOWN, SWIPE_*)
+            migrated = self._cfg.migrate_old_bindings()
+            if migrated:
+                try:
+                    self._on_status(
+                        "手势集已更新：7 个旧手势已被替换，新绑定请重新设置。"
+                    )
+                except Exception:
+                    pass
             self._engine = GestureEngine(
                 dispatch_fn=self._on_gesture_event,
                 on_status=self._on_status,
