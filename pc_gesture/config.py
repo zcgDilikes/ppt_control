@@ -67,6 +67,8 @@ DEFAULT_GESTURE_CONFIG: Dict[str, Any] = {
         "palm_hold_ms": 1800,
         # 激光平滑：0 = 不滤波（直接抖动），1 = 上一帧权重 100%（不响应）
         "laser_smoothing": 0.55,
+        # 状态灯:低于此置信度视为识别不准(三色灯转黄)
+        "low_confidence_threshold": 0.6,
     },
 }
 
