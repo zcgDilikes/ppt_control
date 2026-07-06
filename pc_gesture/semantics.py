@@ -369,14 +369,16 @@ class GestureSemantics:
             st.laser_last_xy = None
 
         # ----- 2) 一次性静态手势（带冷却） -----
-        # 单人：全部由 A 槽触发；双人：FIST/PALM 由 A 槽触发（导航/托掌），THUMBS_UP/DOWN 由 B 槽触发
+        # 单人：全部由 A 槽触发；双人：A 槽触发 FIST/PALM(导航),B 槽触发 L_SIGN/THREE_FINGERS(控制)。
         produce_static = (
             (is_single and slot == "A") or
             (not is_single and slot == "A" and gesture in (self.G_FIST, self.G_PALM)) or
-            (not is_single and slot == "B" and gesture in (self.G_THUMBS_UP, self.G_THUMBS_DOWN))
+            (not is_single and slot == "B" and gesture in (self.G_L_SIGN, self.G_THREE_FINGERS))
         )
         if produce_static and gesture in (
-            self.G_FIST, self.G_PALM, self.G_POINTING_UP, self.G_THUMBS_UP, self.G_THUMBS_DOWN
+            self.G_OK, self.G_L_SIGN, self.G_THREE_FINGERS,
+            self.G_POINTING_UP, self.G_SCISSORS,
+            self.G_FIST, self.G_PALM,
         ) and gesture != st.last_static_gesture:
             cooldown_ms = int(sens.get("gesture_cooldown_ms", 800))
             if now * 1000.0 >= st.static_cooldown_until and cooldown_ms > 0:
