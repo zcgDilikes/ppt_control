@@ -216,7 +216,7 @@ class GestureConfig:
         bindings = self.raw.get("bindings") if isinstance(self.raw, dict) else None
         if not isinstance(bindings, dict):
             return False
-        deprecated = {"THUMBS_UP", "THUMBS_DOWN", "SWIPE_LEFT", "SWIPE_RIGHT"}
+        deprecated = set(_DEPRECATED_GESTURES)
         changed = any(k in bindings for k in deprecated)
         if not changed:
             return False

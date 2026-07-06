@@ -67,7 +67,7 @@ class HandState:
     slot: str = ""                                   # "A" or "B"
     last_seen_monotonic: float = 0.0
     # 上一次识别的手势类别（用于防抖/冷却）
-    last_static_gesture: str = "NONE"                # FIST/PALM/POINTING_UP/THUMBS_UP/THUMBS_DOWN/NONE
+    last_static_gesture: str = "NONE"                # OK / L_SIGN / THREE_FINGERS / POINTING_UP / SCISSORS / FIST / PALM / NONE
     static_cooldown_until: float = 0.0
     # 捏合迟滞
     pinching: bool = False
@@ -76,9 +76,6 @@ class HandState:
     palm_hold_fired: bool = False
     # 激光上一帧坐标（用于 EMA）
     laser_last_xy: Optional[Tuple[float, float]] = None
-    # 挥页 wrist x 历史（环形缓冲）
-    wrist_history: List[Tuple[float, float]] = field(default_factory=list)
-    last_swire_at: float = 0.0
     # 配对确认累计：slot A 在 pointing_up 上稳定了多久
     pointing_up_start: Optional[float] = None
 
@@ -124,8 +121,6 @@ class GestureSemantics:
             slot.palm_hold_start = None
             slot.palm_hold_fired = False
             slot.laser_last_xy = None
-            slot.wrist_history.clear()
-            slot.last_swire_at = 0.0
             slot.pointing_up_start = None
 
     # ------------------------------------------------------------------
@@ -169,15 +164,6 @@ class GestureSemantics:
     def _hand_size(lm) -> float:
         """以 wrist→middle MCP 距离作为手掌参考长度（归一化坐标下通常 0.15~0.35）。"""
         return max(_dist(lm[WRIST].x, lm[WRIST].y, lm[MIDDLE_MCP].x, lm[MIDDLE_MCP].y), 1e-3)
-
-    @staticmethod
-    def _finger_curled(lm, tip_idx: int, pip_idx: int) -> bool:
-        """TIP.y > PIP.y 表示指尖低于 PIP（卷曲）；margin 抗噪。"""
-        return lm[tip_idx].y > lm[pip_idx].y + 0.005
-
-    @staticmethod
-    def _finger_extended(lm, tip_idx: int, pip_idx: int, margin: float = 0.025) -> bool:
-        return lm[tip_idx].y < lm[pip_idx].y - margin
 
     def _classify_static(self, lm) -> str:
         """返回 7 个新 enum 之一(NONE / OK / L_SIGN / THREE_FINGERS / POINTING_UP / SCISSORS / FIST / PALM)。
@@ -320,7 +306,6 @@ class GestureSemantics:
                     st.pinching = False
                     st.palm_hold_start = None
                     st.palm_hold_fired = False
-                    st.wrist_history.clear()
                     st.laser_last_xy = None
                     st.pointing_up_start = None
 
@@ -424,58 +409,7 @@ class GestureSemantics:
             # 不允许该槽位产生捏合 → 重置
             st.pinching = False
 
-        # ----- 5) 左右挥 → 翻页（仅 A 槽，单/双人都由 A 负责导航） -----
-        if slot == "A":
-            self._update_swipe(lm, st, sens, now, events)
-
         return events
-
-    def _update_swipe(self, lm, st: HandState, sens: Dict[str, Any],
-                      now: float, events: List[Dict[str, Any]]) -> None:
-        """基于 wrist x 在时间窗内的位移判定左右挥。"""
-        if self._classify_static(lm) != self.G_PALM:
-            st.wrist_history.clear()
-            return
-
-        wx = float(lm[WRIST].x)
-        history_ms = int(sens.get("swipe_history_ms", 240))
-        cooldown_ms = int(sens.get("swipe_cooldown_ms", 700))
-        min_velocity = float(sens.get("swipe_min_velocity", 0.18))
-        if cooldown_ms > 0 and (now - st.last_swire_at) * 1000.0 < cooldown_ms:
-            return
-
-        st.wrist_history.append((now, wx))
-        # 清理窗口外
-        cutoff = now - history_ms / 1000.0
-        st.wrist_history = [(t, x) for (t, x) in st.wrist_history if t >= cutoff]
-        if len(st.wrist_history) < 3:
-            return
-
-        oldest_t, oldest_x = st.wrist_history[0]
-        dt = now - oldest_t
-        if dt <= 0:
-            return
-        dx = wx - oldest_x
-        velocity = dx / dt
-        if abs(velocity) < min_velocity:
-            return
-
-        if velocity > 0:
-            events.append({
-                "type": "gesture",
-                "gesture": "SWIPE_RIGHT",
-                "slot": st.slot,
-                "source": "gesture:swipe",
-            })
-        else:
-            events.append({
-                "type": "gesture",
-                "gesture": "SWIPE_LEFT",
-                "slot": st.slot,
-                "source": "gesture:swipe",
-            })
-        st.last_swire_at = now
-        st.wrist_history.clear()
 
     # ------------------------------------------------------------------
     # 配对判定：A 槽 pointing_up 持续 ≥ 1 秒 → 确认
