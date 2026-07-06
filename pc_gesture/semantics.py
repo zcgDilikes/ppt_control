@@ -107,6 +107,22 @@ class GestureSemantics:
     # ------------------------------------------------------------------
     # 配置热更新
     # ------------------------------------------------------------------
+    def _resolve_role_flags(self, is_single: bool, slot: str) -> tuple:
+        """info.txt 六.1:role mapping 集中点。
+
+        返回 (produce_laser, produce_static, produce_pinch):
+          - laser:   single + A | dual + B
+          - static:  single + A | dual + A,B
+          - pinch:   single + A | dual + B
+        """
+        produce_laser = (is_single and slot == "A") or (not is_single and slot == "B")
+        produce_static = (
+            (is_single and slot == "A") or
+            (not is_single and slot in ("A", "B"))
+        )
+        produce_pinch = (is_single and slot == "A") or (not is_single and slot == "B")
+        return produce_laser, produce_static, produce_pinch
+
     def reload_config(self, cfg: GestureConfig) -> None:
         self.cfg = cfg
         # 清空运行时状态，避免旧阈值下的历史造成误判
@@ -409,6 +425,12 @@ class GestureSemantics:
         # 注意：单/双人 角色映射由调用方（GestureEngine）决定；
         # 这里只负责「单只手能产生哪些事件」，由 slot 在合适时跳过。
 
+        # info.txt 六.1:role mapping 集中管理,避免 _process_one_hand 内
+        # 多个 if 分支散落。_resolve_role_flags 抽出来单测可验证。
+        produce_laser, produce_static, produce_pinch = self._resolve_role_flags(
+            is_single, slot
+        )
+
         # 统一时间戳字段(info.txt 四.1):所有事件带 ts (秒, monotonic) 和
         # ts_ms (毫秒, int),上层能时序对齐、做防抖。
         ts = now
@@ -420,7 +442,6 @@ class GestureSemantics:
         # follows the fingertip smoothly. The bridge / dispatcher uses
         # ``cmd`` payloads for laser motion and ``type=gesture`` payloads for
         # one-shot rising-edge bindings. These two channels are kept distinct.
-        produce_laser = (is_single and slot == "A") or (not is_single and slot == "B")
         if produce_laser and gesture == self.G_POINTING_UP:
             tx = float(lm[INDEX_TIP].x)
             ty = float(lm[INDEX_TIP].y)
@@ -502,7 +523,6 @@ class GestureSemantics:
         st.last_static_gesture = gesture
 
         # ----- 3) 捏合 → 点击（迟滞防抖） -----
-        produce_pinch = (is_single and slot == "A") or (not is_single and slot == "B")
         if produce_pinch:
             pinch_th = float(sens.get("pinch_threshold", 0.32))
             pinch_rel = float(sens.get("pinch_release", 0.45))
