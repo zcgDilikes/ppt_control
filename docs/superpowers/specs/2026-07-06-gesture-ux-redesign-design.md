@@ -101,15 +101,17 @@ class HandSnapshot:
 
 ### 2.2 数据上行路径
 
+引擎新增构造参数 `on_frame: Optional[Callable[[FrameSnapshot], None]] = None`（与现有 `on_status` / `on_fps` / `on_send_text` 平级）。
+
 ```
 引擎后台线程：
   cap.read() → landmarker.detect() → 组装 FrameSnapshot
                                     → cache self._latest_snapshot
-                                    → 调 on_frame(snap)  (新回调)
+                                    → if on_frame: on_frame(snap)
 
-Bridge（主线程 + 后台线程安全）：
-  def _on_frame(snap):
-      self._latest_snapshot = snap              # 主存最近一帧（原子赋值）
+Bridge（主存最近一帧；后台线程写、主线程读）：
+  def _on_frame(snap):                          # 由 engine 回调入口
+      self._latest_snapshot = snap              # 单属性赋值，Python GIL 下原子
       self._frame_signal.emit(snap)             # Qt Signal，QueuedConnection
 
 GesturePage（主线程，槽函数）：
@@ -120,6 +122,8 @@ GesturePage（主线程，槽函数）：
       self._update_diagnostics(snap)            # 诊断面板
       self._update_sync_highlight(snap)         # 三处高亮
 ```
+
+**线程安全说明**：Bridge 的 `self._latest_snapshot = snap` 是 Python 单属性赋值，受 GIL 保护，等价于原子操作。主线程读这个属性永远拿到的是某个完整对象（或更新前，或更新后），不会读到半初始化的对象。
 
 **150ms 兜底**：Signal 是首选，但若 Signal 出问题（例如 Qt loop 阻塞），UI 用 150ms 轮询 `bridge.latest_snapshot()` 兜底。两条路并存，Signal 优先。
 
@@ -146,7 +150,7 @@ GesturePage（主线程，槽函数）：
 - 图卡对应行：`setStyleSheet("background:rgba(34,197,94,0.4)")` + 2s reset（已实现，保留）
 - **映射下拉行**：`setStyleSheet("...")` 同步高亮（**新增**）
 - **试用面板当前识别**：`setStyleSheet("...")` 同步高亮（**新增**）
-- 三处共享同一个 `gesture_name`，用 `QTimer.singleShot(2000, ...)` 统一 reset
+- 三处共享 GesturePage 上的同一个 `self._current_gesture: Optional[str]` 变量（试用面板 `_poll_bridge_gestures` 已经持有），新识别到来时统一刷新三处 widget；用 `QTimer.singleShot(2000, ...)` 统一 reset
 
 ## §3 · 错误与边界
 
