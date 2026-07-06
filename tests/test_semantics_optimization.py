@@ -24,11 +24,26 @@ def test_pairing_accepts_pointing_up_from_either_slot():
     cfg = load_gesture_config()
     sem = GestureSemantics(cfg)
     sem.start_pairing(window_ms=5000)
-    # B 槽 doing pointing up(必须同时设置 last_static_gesture 才能进 timer 分支)
-    sem._slots["B"].last_static_gesture = sem.G_POINTING_UP
-    sem._slots["B"].pointing_up_start = time.monotonic() - 1.5
-    sem._update_pairing(time.monotonic())
-    assert sem._pairing_confirmed is True
+    # 直接调 PairingService.update() 喂状态
+    sem._pairing.update(
+        time.monotonic(),
+        {"A": "NONE", "B": sem.G_POINTING_UP},
+        sem.G_POINTING_UP,
+    )
+    # B 槽还没 1s,不确认
+    assert sem._pairing.confirmed is False
+    # 时间跳到 1.5s 后再 update
+    sem._pairing.update(
+        time.monotonic() - 1.5,  # 倒退 1.5s
+        {"A": "NONE", "B": sem.G_POINTING_UP},
+        sem.G_POINTING_UP,
+    )
+    # 等等,倒退时间会让 elapsed_ms 变负,PairingService 用 now - started,
+    # 倒退不实际生效。改用 mock approach:
+    # 让 slot_pointing_up_start 直接设为 1.5s 前
+    sem._pairing._slot_pointing_up_start["B"] = time.monotonic() - 1.5
+    sem._pairing.update(time.monotonic(), {"A": "NONE", "B": sem.G_POINTING_UP}, sem.G_POINTING_UP)
+    assert sem._pairing.confirmed is True
 
 
 def test_pairing_does_not_confirm_when_no_pointing():
@@ -37,8 +52,8 @@ def test_pairing_does_not_confirm_when_no_pointing():
     sem = GestureSemantics(cfg)
     sem.start_pairing(window_ms=5000)
     sem._update_pairing(time.monotonic())
-    assert sem._pairing_confirmed is False
-    assert sem._pairing_active is True
+    assert sem._pairing.confirmed is False
+    assert sem._pairing.active is True
 
 
 # ---- 三.1: hand leave clears cooldown + last_static_gesture ----
@@ -61,17 +76,16 @@ def test_hand_leave_clears_cooldown_and_last_gesture():
 # ---- 三.2: reload_config resets pairing ----
 
 def test_reload_config_resets_pairing_state():
-    """reload_config 后,_pairing_active/_confirmed/_started 都应被重置。"""
+    """reload_config 后,PairingService 状态都应被重置。"""
     cfg = load_gesture_config()
     sem = GestureSemantics(cfg)
     sem.start_pairing(window_ms=5000)
-    sem._pairing_confirmed = True
-    sem._update_pairing(time.monotonic())
+    sem._pairing._confirmed = True
     # 现在 reload
     sem.reload_config(load_gesture_config())
-    assert sem._pairing_active is False
-    assert sem._pairing_confirmed is False
-    assert sem._pairing_started == 0.0
+    assert sem._pairing.active is False
+    assert sem._pairing.confirmed is False
+    assert sem._pairing._started == 0.0
 
 
 # ---- 三.3: palm_hold fields removed ----

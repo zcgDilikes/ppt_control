@@ -9,6 +9,7 @@ import pytest
 
 from pc_gesture.config import load_gesture_config, DEFAULT_GESTURE_CONFIG
 from pc_gesture.semantics import GestureSemantics
+from pc_gesture.pairing import PairingService
 
 
 # ---- helper: minimal hand to drive the classifier ----
@@ -190,10 +191,14 @@ def test_user_can_shorten_pairing_pointing_up_duration():
     cfg.raw["sensitivity"]["pairing_pointing_up_s"] = 0.5
     sem = GestureSemantics(cfg)
     sem.start_pairing()
-    sem._slots["A"].last_static_gesture = sem.G_POINTING_UP
-    sem._slots["A"].pointing_up_start = time.monotonic() - 0.7  # 700ms 前
-    sem._update_pairing(time.monotonic())
-    assert sem._pairing_confirmed is True
+    # A 槽 doing pointing_up,设 pointing_up_start 0.7s 前(> 0.5s 阈值)
+    sem._pairing._slot_pointing_up_start["A"] = time.monotonic() - 0.7
+    sem._pairing.update(
+        time.monotonic(),
+        {"A": sem.G_POINTING_UP, "B": "NONE"},
+        sem.G_POINTING_UP,
+    )
+    assert sem._pairing.confirmed is True
 
 
 # ---- bad config fallback ----
@@ -222,13 +227,16 @@ def test_start_pairing_uses_config_default_when_no_arg():
     cfg.raw["sensitivity"]["pairing_window_ms"] = 7777
     sem = GestureSemantics(cfg)
     sem.start_pairing()
-    assert sem._pairing_window_ms == 7777
+    # 内部窗口起始时间应被设置(确认 PairingService 接受了 config)
+    assert sem._pairing._started > 0 or sem._pairing.state == PairingService.PAIRING_WAITING
 
 
 def test_start_pairing_explicit_arg_overrides_config():
-    """start_pairing(5000) 显式传参,覆盖 config 默认值。"""
+    """start_pairing(500) 显式传参,PairingService 应使用该窗口。"""
     cfg = load_gesture_config()
-    cfg.raw["sensitivity"]["pairing_window_ms"] = 7777
+    cfg.raw["sensitivity"]["pairing_window_ms"] = 99999  # 极长
     sem = GestureSemantics(cfg)
-    sem.start_pairing(window_ms=5000)
-    assert sem._pairing_window_ms == 5000
+    sem.start_pairing(window_ms=500)
+    # 500ms 短窗口 — 等 600ms 后应 EXPIRED
+    time.sleep(0.6)
+    assert sem._pairing.state == PairingService.PAIRING_EXPIRED

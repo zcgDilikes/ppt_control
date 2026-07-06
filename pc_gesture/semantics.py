@@ -27,6 +27,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from .config import GestureConfig
+from .pairing import PairingService
 
 
 # ---------------------------------------------------------------------------
@@ -100,16 +101,8 @@ class GestureSemantics:
             "A": HandState(slot="A"),
             "B": HandState(slot="B"),
         }
-        # 配对
-        self._pairing_active: bool = False
-        self._pairing_started: float = 0.0
-        self._pairing_confirmed: bool = False
-        try:
-            self._pairing_window_ms: int = int(
-                self.cfg.sensitivity.get("pairing_window_ms", 3000)
-            )
-        except (TypeError, ValueError):
-            self._pairing_window_ms = 3000
+        # 配对(info.txt 六.2:抽到独立 PairingService,semantics 只负责喂状态)
+        self._pairing = PairingService(self.cfg.sensitivity)
 
     # ------------------------------------------------------------------
     # 配置热更新
@@ -123,47 +116,27 @@ class GestureSemantics:
             slot.static_cooldown_until = 0.0
             slot.pinching = False
             slot.laser_last_xy = None
-            slot.pointing_up_start = None
         # info.txt 三.2:热更新配置时也重置配对状态,避免新旧阈值冲突
-        self._pairing_active = False
-        self._pairing_confirmed = False
-        self._pairing_started = 0.0
+        self._pairing.reset()
+        # PairingService 也要更新 sensitivity 引用
+        self._pairing = PairingService(self.cfg.sensitivity)
 
     # ------------------------------------------------------------------
-    # 配对（仅在 dual 模式下生效）
+    # 配对(委托给 PairingService)
     # ------------------------------------------------------------------
     def start_pairing(self, window_ms: Optional[int] = None) -> None:
-        if window_ms is None:
-            window_ms = self._pairing_window_ms
-        self._pairing_active = True
-        self._pairing_started = time.monotonic()
-        self._pairing_confirmed = False
-        self._pairing_window_ms = max(500, int(window_ms))
-        # 清除指向累计，从头开始计时
-        for slot in self._slots.values():
-            slot.pointing_up_start = None
+        self._pairing.start(window_ms)
 
     def reset_pairing(self) -> None:
-        self._pairing_active = False
-        self._pairing_confirmed = False
-        self._pairing_started = 0.0
-        for slot in self._slots.values():
-            slot.pointing_up_start = None
+        self._pairing.reset()
 
     @property
     def pairing_state(self) -> str:
-        if not self._pairing_active:
-            return "IDLE"
-        if self._pairing_confirmed:
-            return "CONFIRMED"
-        elapsed_ms = (time.monotonic() - self._pairing_started) * 1000.0
-        if elapsed_ms > self._pairing_window_ms:
-            return "EXPIRED"
-        return "WAITING"
+        return self._pairing.state
 
     @property
     def pairing_confirmed(self) -> bool:
-        return self._pairing_confirmed
+        return self._pairing.confirmed
 
     # ------------------------------------------------------------------
     # 关键点 → 几何特征
@@ -395,8 +368,9 @@ class GestureSemantics:
                 active_slots.add(slot)
                 events.extend(self._process_one_hand(lm_list, slot, st, sens, now))
 
-        # 配对窗口中：A 槽（屏幕左）持续 pointing_up 满 1 秒 → 确认
-        self._update_pairing(now)
+        # 配对:喂 PairingService 当前各 slot 状态,看是否确认
+        slot_gestures = {slot: st.last_static_gesture for slot, st in self._slots.items()}
+        self._pairing.update(now, slot_gestures, self.G_POINTING_UP)
 
         # 没出现在本帧的槽位:清理与该手相关的瞬时状态
         # info.txt 三.1:手部消失 hand_lost_cleanup_s 后,也要清空 last_static_gesture + 冷却,
@@ -560,31 +534,10 @@ class GestureSemantics:
         return events
 
     # ------------------------------------------------------------------
-    # 配对判定:任意槽 pointing_up 持续 ≥ 1 秒 → 确认
-    # info.txt 一.3:之前硬编码只看 slot A,dual_roles_swapped=True 时配对失效。
-    # 修复:扫描所有 slot,任意一个正在做 pointing_up 都开始累计;任一达到 1s 即可确认。
+    # 配对逻辑(info.txt 六.2:已抽到 PairingService,这里只留 deprecated stub)
     # ------------------------------------------------------------------
-    def _update_pairing(self, now: float) -> None:
-        if not self._pairing_active or self._pairing_confirmed:
-            return
-        elapsed_ms = (now - self._pairing_started) * 1000.0
-        if elapsed_ms > self._pairing_window_ms:
-            # 超时:本次配对失败
-            self._pairing_active = False
-            return
-
-        # 任一 slot 正在 pointing_up,各自独立累计
-        # 配对成功所需 pointing_up 持续秒数(从 sens 读,fallback 1.0)
-        try:
-            pointing_up_s = float(self.cfg.sensitivity.get("pairing_pointing_up_s", 1.0))
-        except (TypeError, ValueError):
-            pointing_up_s = 1.0
-        for slot in self._slots.values():
-            if slot.last_static_gesture == self.G_POINTING_UP:
-                if slot.pointing_up_start is None:
-                    slot.pointing_up_start = now
-                elif (now - slot.pointing_up_start) >= pointing_up_s:
-                    self._pairing_confirmed = True
-                    return
-            else:
-                slot.pointing_up_start = None
+    def _update_pairing(self, now: float) -> None:  # pragma: no cover
+        # 旧 API,保留为 deprecated stub。新逻辑在 process() 里直接调
+        # self._pairing.update(),不再用本方法。
+        slot_gestures = {slot: st.last_static_gesture for slot, st in self._slots.items()}
+        self._pairing.update(now, slot_gestures, self.G_POINTING_UP)
