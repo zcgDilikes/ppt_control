@@ -30,12 +30,11 @@ class FakeEngine:
 
     instances = []  # type: ignore[type-arg]
 
-    def __init__(self, *, dispatch_fn, on_status, on_fps, on_send_text, on_frame=None):
+    def __init__(self, *, dispatch_fn, on_status, on_fps, on_frame=None):
         self.kwargs = {
             "dispatch_fn": dispatch_fn,
             "on_status": on_status,
             "on_fps": on_fps,
-            "on_send_text": on_send_text,
             "on_frame": on_frame,
         }
         self.start_called = False
@@ -91,7 +90,6 @@ def _make_bridge(monkeypatch):
         dispatcher=dispatcher,
         on_status=lambda s: status_calls.append(s),
         on_fps=lambda f: fps_calls.append(f),
-        on_send_text=lambda t: send_text_calls.append(t),
     )
     return bridge_mod, bridge, dispatcher, (status_calls, fps_calls, send_text_calls)
 
@@ -188,7 +186,6 @@ def test_bridge_routes_gesture_event_to_dispatcher():
             dispatcher=FakeDispatcher(),
             on_status=lambda t: None,
             on_fps=lambda f: None,
-            on_send_text=lambda: None,
         )
         bridge.cfg.set_binding("FIST", "BLACK_SCREEN")
         bridge._on_gesture_event({"type": "gesture", "gesture": "FIST", "slot": "A", "source": "gesture:A"})
@@ -219,7 +216,6 @@ def test_bridge_skips_unbound_gesture():
             dispatcher=FakeDispatcher(),
             on_status=lambda t: None,
             on_fps=lambda f: None,
-            on_send_text=lambda: None,
         )
         bridge.cfg.reset_bindings()
         bridge._on_gesture_event({"type": "gesture", "gesture": "POINTING_UP", "slot": "A", "source": "gesture:A"})
@@ -250,7 +246,6 @@ def test_bridge_skips_non_a_slot():
             dispatcher=FakeDispatcher(),
             on_status=lambda t: None,
             on_fps=lambda f: None,
-            on_send_text=lambda: None,
         )
         bridge.cfg.set_binding("FIST", "BLACK_SCREEN")
         bridge._on_gesture_event({"type": "gesture", "gesture": "FIST", "slot": "B", "source": "gesture:B"})

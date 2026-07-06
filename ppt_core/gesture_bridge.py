@@ -61,13 +61,11 @@ class GestureBridge(QObject):
         dispatcher,
         on_status: Callable[[str], None],
         on_fps: Callable[[float], None],
-        on_send_text: Callable[[str], None],
     ) -> None:
         super().__init__()
         self._dispatcher = dispatcher
         self._on_status = on_status
         self._on_fps = on_fps
-        self._on_send_text = on_send_text
         self._engine: Optional[GestureEngine] = None
         # Bridge-owned GestureConfig so UI calls (set_binding / get_binding /
         # reset_bindings) work before any engine.start(). The engine itself
@@ -112,7 +110,6 @@ class GestureBridge(QObject):
                 dispatch_fn=self._on_gesture_event,
                 on_status=self._on_status,
                 on_fps=self._on_fps,
-                on_send_text=self._on_send_text,
                 on_frame=self._on_frame,
             )
         return self._engine

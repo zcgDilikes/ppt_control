@@ -50,9 +50,9 @@ def test_laser_emits_per_frame_cmd_laser(monkeypatch):
     # Force classifier to return POINTING_UP for both frames.
     monkeypatch.setattr(sem, "_classify_static", lambda lm: sem.G_POINTING_UP)
     # First frame: warm up state (rising-edge fires here).
-    sem.process([lm], [], on_send_text=None)
+    sem.process([lm], [])
     # Second frame: should now emit a per-frame LASER cmd.
-    events = sem.process([lm], [], on_send_text=None)
+    events = sem.process([lm], [])
     laser_cmds = [e for e in events if e.get("cmd") == "LASER"]
     assert len(laser_cmds) >= 1, f"expected per-frame LASER cmd, got {events}"
     assert "x" in laser_cmds[0] and "y" in laser_cmds[0]
@@ -64,7 +64,7 @@ def test_pointing_up_rising_edge_emits_type_gesture(monkeypatch):
     sem = GestureSemantics(cfg)
     lm = _make_hand_pointing_up()
     monkeypatch.setattr(sem, "_classify_static", lambda lm: sem.G_POINTING_UP)
-    events = sem.process([lm], [], on_send_text=None)
+    events = sem.process([lm], [])
     gesture_events = [e for e in events if e.get("type") == "gesture"]
     assert any(e.get("gesture") == "POINTING_UP" for e in gesture_events), events
 
@@ -75,7 +75,7 @@ def test_fist_rising_edge_emits_type_gesture_no_laser(monkeypatch):
     sem = GestureSemantics(cfg)
     lm = _make_hand_pointing_up()
     monkeypatch.setattr(sem, "_classify_static", lambda lm: sem.G_FIST)
-    events = sem.process([lm], [], on_send_text=None)
+    events = sem.process([lm], [])
     gesture_events = [e for e in events if e.get("type") == "gesture"]
     assert any(e.get("gesture") == "FIST" for e in gesture_events), events
     laser_cmds = [e for e in events if e.get("cmd") == "LASER"]

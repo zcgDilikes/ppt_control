@@ -40,7 +40,6 @@ def _make_bridge():
             dispatcher=FakeDispatcher(),
             on_status=lambda t: None,
             on_fps=lambda f: None,
-            on_send_text=lambda: None,
         )
     finally:
         gb.GestureEngine = orig_engine

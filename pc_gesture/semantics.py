@@ -5,7 +5,7 @@ pc_gesture.semantics
 每帧把手部关键点（21 个 NormalizedLandmark）分类为「事件」，供 GestureEngine 派发。
 
 主要分类：
-    握拳 / 张掌 / 竖拇指 / 拇指向下 / 食指（激光）/ 捏合（点击）/ 左右挥（翻页）/ 托掌（on_send_text）
+    OK / L / 三指 / 食指（激光）/ 剪刀 / 拳头 / 张掌 / 捏合（点击）
 
 双人模式：
     按 ``hand_landmarks[WRIST].x`` 把每只手分配到 A 槽或 B 槽：
@@ -73,8 +73,8 @@ class HandState:
     # 捏合迟滞
     pinching: bool = False
     # 托掌持续时长
-    palm_hold_start: Optional[float] = None
-    palm_hold_fired: bool = False
+    palm_hold_start: Optional[float] = None  # 已弃用:旧设计「托掌 1.8s 发文本」已删除
+    palm_hold_fired: bool = False            # 已弃用
     # 激光上一帧坐标（用于 EMA）
     laser_last_xy: Optional[Tuple[float, float]] = None
     # 配对确认累计：slot A 在 pointing_up 上稳定了多久
@@ -119,8 +119,6 @@ class GestureSemantics:
             slot.last_static_gesture = self.G_NONE
             slot.static_cooldown_until = 0.0
             slot.pinching = False
-            slot.palm_hold_start = None
-            slot.palm_hold_fired = False
             slot.laser_last_xy = None
             slot.pointing_up_start = None
 
@@ -276,7 +274,6 @@ class GestureSemantics:
         self,
         hand_landmarks_list,
         handedness_list,
-        on_send_text: Optional[Callable[[], None]] = None,
     ) -> List[Dict[str, Any]]:
         """输入 MediaPipe Tasks HandLandmarker.detect 的结果；返回要派发的事件列表。"""
         sens = self.cfg.sensitivity
@@ -293,20 +290,18 @@ class GestureSemantics:
                 st = self._slots[slot]
                 st.last_seen_monotonic = now
                 active_slots.add(slot)
-                events.extend(self._process_one_hand(lm_list, slot, st, sens, now, on_send_text))
+                events.extend(self._process_one_hand(lm_list, slot, st, sens, now))
 
         # 配对窗口中：A 槽（屏幕左）持续 pointing_up 满 1 秒 → 确认
         self._update_pairing(now)
 
         # 没出现在本帧的槽位：清理与该手相关的瞬时状态（pinch/tap/wrist 历史）
-        # 但保留静态手势冷却和 palm_hold 计时，避免画面外短暂消失就重置
+        # 但保留静态手势冷却，避免画面外短暂消失就重置
         for slot, st in self._slots.items():
             if slot not in active_slots:
                 # 失联超过 500ms，重置瞬时状态
                 if now - st.last_seen_monotonic > 0.5:
                     st.pinching = False
-                    st.palm_hold_start = None
-                    st.palm_hold_fired = False
                     st.laser_last_xy = None
                     st.pointing_up_start = None
 
@@ -316,8 +311,7 @@ class GestureSemantics:
     # 单只手处理
     # ------------------------------------------------------------------
     def _process_one_hand(self, lm, slot: str, st: HandState,
-                          sens: Dict[str, Any], now: float,
-                          on_send_text: Optional[Callable[[], None]]) -> List[Dict[str, Any]]:
+                          sens: Dict[str, Any], now: float) -> List[Dict[str, Any]]:
         events: List[Dict[str, Any]] = []
         operator_mode = self.cfg.operator_mode
         is_single = operator_mode == "single"
@@ -391,26 +385,7 @@ class GestureSemantics:
                 print(f"[semantics] ⏸️  {gesture} 被冷却挡住 ({now - st.static_cooldown_until:.2f}s 剩余)")
         st.last_static_gesture = gesture
 
-        # ----- 3) 张掌持续 → 托掌进轮盘（on_send_text） -----
-        produce_palm_hold = (is_single and slot == "A") or (not is_single and slot == "A")
-        if produce_palm_hold and gesture == self.G_PALM:
-            if st.palm_hold_start is None:
-                st.palm_hold_start = now
-            elif not st.palm_hold_fired:
-                held_ms = (now - st.palm_hold_start) * 1000.0
-                if held_ms >= float(sens.get("palm_hold_ms", 1800)):
-                    st.palm_hold_fired = True
-                    if on_send_text is not None:
-                        try:
-                            on_send_text()
-                        except Exception:
-                            pass
-        else:
-            # 张掌中断或被其他手势替代 → 重置
-            st.palm_hold_start = None
-            st.palm_hold_fired = False
-
-        # ----- 4) 捏合 → 点击（迟滞防抖） -----
+        # ----- 3) 捏合 → 点击（迟滞防抖） -----
         produce_pinch = (is_single and slot == "A") or (not is_single and slot == "B")
         if produce_pinch:
             pinch_th = float(sens.get("pinch_threshold", 0.32))

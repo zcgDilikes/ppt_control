@@ -21,7 +21,6 @@ def _make_engine(on_frame=None):
         dispatch_fn=lambda *a, **k: None,
         on_status=lambda t: None,
         on_fps=lambda f: None,
-        on_send_text=lambda: None,
         on_frame=on_frame,
     )
 

@@ -66,7 +66,6 @@ class PptQtApp:
             dispatcher=self._dispatcher,
             on_status=lambda text: None,
             on_fps=lambda fps: None,
-            on_send_text=self._on_gesture_send_text,
         )
 
         self._build_main_window()
@@ -298,12 +297,6 @@ class PptQtApp:
 
     def _on_open_save_dir(self):
         self._downloads.open_folder()
-
-    def _on_gesture_send_text(self):
-        from PySide6.QtWidgets import QInputDialog
-        text, ok = QInputDialog.getText(self._win, "发文本", "输入要发送到前台的文本：")
-        if ok and text:
-            self._dispatcher.dispatch({"cmd": "SEND_TEXT", "text": text})
 
     def _quit_app(self):
         if self._ws is not None:

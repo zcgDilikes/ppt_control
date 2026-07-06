@@ -24,12 +24,11 @@ class _FakeDispatcher:
 class _FakeEngine:
     instances = []
 
-    def __init__(self, *, dispatch_fn, on_status, on_fps, on_send_text):
+    def __init__(self, *, dispatch_fn, on_status, on_fps):
         self.kwargs = {
             "dispatch_fn": dispatch_fn,
             "on_status": on_status,
             "on_fps": on_fps,
-            "on_send_text": on_send_text,
         }
         self.start_called = False
         self.stop_called = False
@@ -72,7 +71,6 @@ def _make_bridge(monkeypatch):
         dispatcher=_FakeDispatcher(),
         on_status=lambda s: None,
         on_fps=lambda f: None,
-        on_send_text=lambda t: None,
     )
     return bridge_mod, bridge
 
@@ -143,7 +141,6 @@ def test_save_persists_bridge_bindings_to_disk(monkeypatch, tmp_path):
             dispatch_fn=lambda *a, **k: None,
             on_status=lambda t: None,
             on_fps=lambda f: None,
-            on_send_text=lambda t: None,
         )
         bridge._engine.cfg = load_gesture_config(path=str(cfg_path))
         bridge.save()

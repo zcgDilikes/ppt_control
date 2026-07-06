@@ -17,7 +17,6 @@ def test_bridge_has_latest_snapshot_field():
             dispatcher=_FakeDispatcher(),
             on_status=lambda t: None,
             on_fps=lambda f: None,
-            on_send_text=lambda: None,
         )
         assert hasattr(bridge, "latest_snapshot")
         assert bridge.latest_snapshot() is None
@@ -47,7 +46,6 @@ def test_bridge_on_frame_callback_caches_snapshot():
             dispatcher=_FakeDispatcher(),
             on_status=lambda t: None,
             on_fps=lambda f: None,
-            on_send_text=lambda: None,
         )
         bridge.start()  # triggers _ensure → _Cap(**kw) captured
         assert "on_frame" in captured[0]
@@ -84,7 +82,6 @@ def test_bridge_frame_signal_emit_on_callback():
             dispatcher=_FakeDispatcher(),
             on_status=lambda t: None,
             on_fps=lambda f: None,
-            on_send_text=lambda: None,
         )
         bridge.frame_signal.connect(lambda s: captured_signal.append(s))
         from pc_gesture.types import FrameSnapshot

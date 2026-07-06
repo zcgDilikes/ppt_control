@@ -6,7 +6,7 @@ pc_gesture.engine
 
 生命周期::
 
-    eng = GestureEngine(dispatch_fn, on_status, on_fps, on_send_text)
+    eng = GestureEngine(dispatch_fn, on_status, on_fps)
     err = eng.start()                  # None = 成功；str = 错误信息（缺依赖 / 无摄像头）
     ...
     eng.stop()
@@ -99,13 +99,11 @@ class GestureEngine:
         dispatch_fn: Callable[[Dict[str, Any], str], None],
         on_status: Callable[[str], None],
         on_fps: Callable[[float], None],
-        on_send_text: Callable[[], None],
         on_frame: Optional[Callable[["FrameSnapshot"], None]] = None,
     ):
         self._dispatch = dispatch_fn
         self._on_status = on_status
         self._on_fps = on_fps
-        self._on_send_text = on_send_text
         # Per-frame callback. When set, _loop pushes a FrameSnapshot each frame.
         self._on_frame = on_frame
         # Cached latest snapshot; main thread reads via latest_snapshot().
@@ -258,9 +256,7 @@ class GestureEngine:
                 # 分类 + 派发
                 if not self.cfg.preview_only:
                     try:
-                        events = self._semantics.process(
-                            hand_landmarks, handedness, on_send_text=self._on_send_text
-                        )
+                        events = self._semantics.process(hand_landmarks, handedness)
                     except Exception as e:
                         if os.environ.get("GESTURE_DEBUG"):
                             traceback.print_exc()
@@ -269,7 +265,7 @@ class GestureEngine:
                         self._safe_dispatch(ev)
                 else:
                     # 预览模式仍要更新配对倒计时
-                    self._semantics.process(hand_landmarks, handedness, on_send_text=None)
+                    self._semantics.process(hand_landmarks, handedness)
 
                 # 组装 FrameSnapshot 并推给 on_frame（如有订阅者）
                 snap = self._build_frame_snapshot(frame, hand_landmarks, handedness)
