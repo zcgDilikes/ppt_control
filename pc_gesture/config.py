@@ -20,8 +20,7 @@ from typing import Any, Dict, Optional
 # 手势/动作枚举 + 默认映射
 # ---------------------------------------------------------------------------
 GESTURES = (
-    "FIST", "PALM", "POINTING_UP", "THUMBS_UP", "THUMBS_DOWN",
-    "SWIPE_LEFT", "SWIPE_RIGHT",
+    "OK", "L_SIGN", "THREE_FINGERS", "POINTING_UP", "SCISSORS", "FIST", "PALM",
 )
 ACTIONS = (
     "NEXT_PAGE", "PREV_PAGE", "FULL_SCREEN", "FROM_CURRENT",
@@ -30,14 +29,19 @@ ACTIONS = (
     "PC_WINDOW_MINIMIZE", "PC_WINDOW_RESTORE",
 )
 DEFAULT_BINDINGS: Dict[str, Optional[str]] = {
-    "FIST":         "BLACK_SCREEN",
-    "PALM":         None,
-    "POINTING_UP":  "NEXT_PAGE",
-    "THUMBS_UP":    "FULL_SCREEN",
-    "THUMBS_DOWN":  "EXIT",
-    "SWIPE_LEFT":   "PREV_PAGE",
-    "SWIPE_RIGHT":  "NEXT_PAGE",
+    "OK":             "NEXT_PAGE",     # 下一页
+    "SCISSORS":       "PREV_PAGE",     # 上一页(剪刀手)
+    "FIST":           "BLACK_SCREEN",  # 黑屏(拳头)
+    "PALM":           "EXIT",          # 退出放映(张掌)
+    "THREE_FINGERS":  "WHITE_SCREEN",  # 白屏(三指)
+    "L_SIGN":         "FULL_SCREEN",   # 从头放映(L 手势)
+    "POINTING_UP":    None,            # 激光:走 rising-edge 持续发射,不走 bindings
 }
+
+# 旧 enum 字符串,用于迁移检测(代码层不再使用)
+_DEPRECATED_GESTURES = (
+    "THUMBS_UP", "THUMBS_DOWN", "SWIPE_LEFT", "SWIPE_RIGHT",
+)
 
 
 # ---------------------------------------------------------------------------
@@ -90,6 +94,7 @@ class GestureConfig:
 
     def __post_init__(self) -> None:
         # 从 raw['bindings'] 同步到实例属性（_merge_defaults 已合并默认值）
+        # 注意：保留 raw 中未知 key（如旧 enum 字符串），由 migrate_old_bindings 清理
         raw_bindings = self.raw.get("bindings") if isinstance(self.raw, dict) else None
         merged: Dict[str, Optional[str]] = dict(DEFAULT_BINDINGS)
         if isinstance(raw_bindings, dict):
@@ -98,9 +103,14 @@ class GestureConfig:
                     v = raw_bindings[g]
                     merged[g] = v if (v is None or v in ACTIONS) else None
         self.bindings = merged
-        # 反向同步到 raw，便于 save
+        # 反向同步到 raw：保留未知键（旧 enum）以供 migrate_old_bindings 检测
         if isinstance(self.raw, dict):
-            self.raw["bindings"] = dict(self.bindings)
+            out = dict(self.bindings)
+            if isinstance(raw_bindings, dict):
+                for k, v in raw_bindings.items():
+                    if k not in out:
+                        out[k] = v
+            self.raw["bindings"] = out
 
     # ----- preview_only -----
     @property
@@ -194,6 +204,30 @@ class GestureConfig:
         self.bindings = new_bindings
         if isinstance(self.raw, dict):
             self.raw["bindings"] = dict(self.bindings)
+
+    # ----- 旧手势迁移 -----
+    def migrate_old_bindings(self) -> bool:
+        """移除 raw['bindings'] 里的旧 enum 键(THUMBS_UP/DOWN, SWIPE_*),
+        并将 tutorial_done 重置为 False。
+
+        返回 True 表示发生了迁移(供上层推 UI 状态消息)。
+        FIST / PALM / POINTING_UP 三个保留 enum 键不动。
+        """
+        bindings = self.raw.get("bindings") if isinstance(self.raw, dict) else None
+        if not isinstance(bindings, dict):
+            return False
+        deprecated = {"THUMBS_UP", "THUMBS_DOWN", "SWIPE_LEFT", "SWIPE_RIGHT"}
+        changed = any(k in bindings for k in deprecated)
+        if not changed:
+            return False
+        for k in deprecated:
+            bindings.pop(k, None)
+        # 反向同步
+        self.bindings = {k: v for k, v in bindings.items() if k in self.bindings or k in GESTURES}
+        self.raw["bindings"] = dict(self.bindings)
+        # 强制重置教学标志
+        self.tutorial_done = False
+        return True
 
 
 def _merge_defaults(raw: dict) -> dict:
