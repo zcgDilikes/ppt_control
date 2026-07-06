@@ -11,6 +11,7 @@ from dataclasses import dataclass
 
 import pytest
 
+from pc_gesture.config import load_gesture_config
 from pc_gesture.semantics import GestureSemantics
 
 
@@ -243,3 +244,68 @@ def test_partial_curl_still_ok(sem):
         pinky_tip_xy=(0.75, 0.51),      # 微卷(pip.y=0.53, tip.y=0.51,差 -0.02 < -0.015 阈值)
     )
     assert sem._classify_static(lm) == sem.G_OK
+
+
+# ---- dual mode: 所有手势在 A/B 两槽都应触发 ----
+
+def test_dual_mode_a_slot_emits_ok(monkeypatch):
+    """Dual 模式下,A 槽的 OK 手势应触发 type=gesture 事件。"""
+    cfg = load_gesture_config()
+    cfg.raw["operator_mode"] = "dual"
+    sem = GestureSemantics(cfg)
+    lm = _hand(
+        thumb_xy=(0.55, 0.2),
+        index_tip_xy=(0.58, 0.2),
+        middle_tip_xy=(0.65, 0.2),
+        ring_tip_xy=(0.7, 0.2),
+        pinky_tip_xy=(0.75, 0.2),
+    )
+    monkeypatch.setattr(sem, "_classify_static", lambda lm: sem.G_OK)
+    events = sem.process([lm], [], on_send_text=None)
+    gesture_events = [e for e in events if e.get("type") == "gesture" and e.get("gesture") == "OK"]
+    assert gesture_events, f"dual mode A slot OK did not emit, got {events}"
+
+
+def test_dual_mode_b_slot_emits_ok(monkeypatch):
+    """Dual 模式下,B 槽的 OK 手势也应触发(无 slot 限制)。"""
+    cfg = load_gesture_config()
+    cfg.raw["operator_mode"] = "dual"
+    cfg.raw["dual_roles_swapped"] = False  # 显式 reset,不依赖磁盘
+    sem = GestureSemantics(cfg)
+    lm = _hand(
+        wrist_xy=(0.7, 0.6),  # wrist x=0.7 → slot B (swapped=False)
+        thumb_xy=(0.75, 0.6),
+        index_tip_xy=(0.78, 0.2),
+        middle_tip_xy=(0.82, 0.2),
+        ring_tip_xy=(0.85, 0.2),
+        pinky_tip_xy=(0.88, 0.2),
+    )
+    monkeypatch.setattr(sem, "_classify_static", lambda lm: sem.G_OK)
+    events = sem.process([lm], [], on_send_text=None)
+    gesture_events = [e for e in events if e.get("type") == "gesture" and e.get("gesture") == "OK"]
+    assert gesture_events, f"dual mode B slot OK did not emit, got {events}"
+
+
+def test_single_mode_b_slot_silently_skipped():
+    """Single 模式:只有 A 槽处理。B 槽(hand 出现在画面右半边)的事件应被 engine 的 _assign_slot 跳过。
+
+    Note: process() 内部 _assign_slot 把 wrist.x >= 0.5 的手分配到 B 槽,
+    而 single mode 下 _semantics.process() 不会处理 B 槽的手(只处理 A 槽)。
+    """
+    cfg = load_gesture_config()
+    cfg.raw["operator_mode"] = "single"
+    cfg.raw["dual_roles_swapped"] = False  # 显式 reset,不依赖磁盘
+    sem = GestureSemantics(cfg)
+    lm = _hand(
+        wrist_xy=(0.7, 0.6),  # wrist x=0.7 → slot B
+        thumb_xy=(0.75, 0.6),
+        index_tip_xy=(0.78, 0.2),
+        middle_tip_xy=(0.82, 0.2),
+        ring_tip_xy=(0.85, 0.2),
+        pinky_tip_xy=(0.88, 0.2),
+    )
+    sem._classify_static = lambda lm: sem.G_OK  # would emit if processed
+    events = sem.process([lm], [], on_send_text=None)
+    # 单人模式 + B 槽 → 不应该有 type=gesture OK 事件
+    gesture_events = [e for e in events if e.get("type") == "gesture" and e.get("gesture") == "OK"]
+    assert gesture_events == [], f"single mode B slot should be skipped, got {gesture_events}"

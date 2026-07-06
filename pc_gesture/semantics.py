@@ -354,11 +354,12 @@ class GestureSemantics:
             st.laser_last_xy = None
 
         # ----- 2) 一次性静态手势（带冷却） -----
-        # 单人：全部由 A 槽触发；双人：A 槽触发 FIST/PALM(导航),B 槽触发 L_SIGN/THREE_FINGERS(控制)。
+        # 单人模式：仅 A 槽触发（用户操作的主手）。
+        # 双人模式：A 和 B 两槽都能触发全部 7 个手势（slot 仅用于诊断/UI）。
+        # 这样所有 7 个新手势在任何模式下都能用。
         produce_static = (
             (is_single and slot == "A") or
-            (not is_single and slot == "A" and gesture in (self.G_FIST, self.G_PALM)) or
-            (not is_single and slot == "B" and gesture in (self.G_L_SIGN, self.G_THREE_FINGERS))
+            (not is_single and slot in ("A", "B"))
         )
         if produce_static and gesture in (
             self.G_OK, self.G_L_SIGN, self.G_THREE_FINGERS,
