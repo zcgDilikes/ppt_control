@@ -30,12 +30,13 @@ class FakeEngine:
 
     instances = []  # type: ignore[type-arg]
 
-    def __init__(self, *, dispatch_fn, on_status, on_fps, on_send_text):
+    def __init__(self, *, dispatch_fn, on_status, on_fps, on_send_text, on_frame=None):
         self.kwargs = {
             "dispatch_fn": dispatch_fn,
             "on_status": on_status,
             "on_fps": on_fps,
             "on_send_text": on_send_text,
+            "on_frame": on_frame,
         }
         self.start_called = False
         self.stop_called = False

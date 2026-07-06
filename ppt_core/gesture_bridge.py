@@ -16,8 +16,11 @@ import time
 from collections import deque
 from typing import Callable, Deque, Dict, Optional
 
+from PySide6.QtCore import QObject, Signal
+
 from pc_gesture.config import load_gesture_config
 from pc_gesture.engine import GestureEngine
+from pc_gesture.types import FrameSnapshot  # 来自 Task 1
 
 # Maximum number of recently recognized gestures kept for UI trial polling.
 # 32 is enough for ~5 seconds at 150 ms poll cadence with comfortable slack.
@@ -45,8 +48,12 @@ def _action_to_cmd(action: str, *, default_open_ppt_path: str = "") -> dict:
     return {}
 
 
-class GestureBridge:
+class GestureBridge(QObject):
     """Thin wrapper over ``GestureEngine`` that talks to the dispatcher."""
+
+    # Per-frame Signal: emitted when the engine pushes a FrameSnapshot.
+    # UI binds a slot to update the embedded preview / status light / diagnostics.
+    frame_signal = Signal(object)
 
     def __init__(
         self,
@@ -56,6 +63,7 @@ class GestureBridge:
         on_fps: Callable[[float], None],
         on_send_text: Callable[[str], None],
     ) -> None:
+        super().__init__()
         self._dispatcher = dispatcher
         self._on_status = on_status
         self._on_fps = on_fps
@@ -70,6 +78,8 @@ class GestureBridge:
         # "source": str}. Entries are appended in ``_on_gesture_event`` and
         # consumed by ``recent_gestures()`` from the Qt thread.
         self._recent_gestures: Deque[Dict[str, object]] = deque(maxlen=_RECENT_GESTURE_LIMIT)
+        # Latest per-frame snapshot (cached for main-thread fallback polling).
+        self._latest_snapshot: Optional[FrameSnapshot] = None
         # Teaching mode: when True, the bridge still recognizes gestures and
         # records them in ``_recent_gestures`` for UI/trial observation, but
         # does NOT call ``dispatcher.dispatch``. The UI's top toggle and the
@@ -94,6 +104,7 @@ class GestureBridge:
                 on_status=self._on_status,
                 on_fps=self._on_fps,
                 on_send_text=self._on_send_text,
+                on_frame=self._on_frame,
             )
         return self._engine
 
@@ -128,6 +139,26 @@ class GestureBridge:
                     self._dispatcher.dispatch(payload)
                 except Exception:
                     pass
+
+    # --------------------------------------------------------------- frames
+
+    def _on_frame(self, snap: FrameSnapshot) -> None:
+        """Engine per-frame callback: cache snapshot + emit Qt Signal.
+
+        Threading: invoked from the engine's background thread, but does only
+        a single attribute write (GIL-atomic) and a Qt Signal emit (queued
+        across to main thread by Qt). Both safe under the spec's threading
+        rules.
+        """
+        self._latest_snapshot = snap
+        try:
+            self.frame_signal.emit(snap)
+        except Exception:
+            pass
+
+    def latest_snapshot(self) -> Optional[FrameSnapshot]:
+        """Most recent FrameSnapshot, or None if engine hasn't produced one yet."""
+        return self._latest_snapshot
 
     # --------------------------------------------------------------- lifecycle
 
