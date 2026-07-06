@@ -13,7 +13,7 @@ pc_gesture.engine
 
 线程模型：
     start() 拉起一个守护线程；线程内做 ``cap.read()`` → ``landmarker.detect()`` →
-    ``semantics.process()`` → ``dispatch_fn(event)`` → 预览帧 ``cv2.imshow``。
+    ``semantics.process()`` → ``dispatch_fn(event)`` → ``on_frame(snapshot)``。
     stop() 通过 ``_stop_event`` 让线程在下一次循环开头退出（≤2s 超时 join）。
 
 依赖：
@@ -31,6 +31,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 from .config import GestureConfig, load_gesture_config, save_gesture_config
 from .semantics import GestureSemantics
+from .types import FrameSnapshot, HandSnapshot
 
 
 # ---------------------------------------------------------------------------
@@ -90,47 +91,6 @@ def _import_runtime():
 
 
 # ---------------------------------------------------------------------------
-# Hand landmarks 骨架连接（用于预览叠加）
-# ---------------------------------------------------------------------------
-_HAND_CONNECTIONS = [
-    (0, 1), (1, 2), (2, 3), (3, 4),            # 拇指
-    (0, 5), (5, 6), (6, 7), (7, 8),            # 食指
-    (5, 9), (9, 10), (10, 11), (11, 12),       # 中指
-    (9, 13), (13, 14), (14, 15), (15, 16),     # 无名指
-    (13, 17), (17, 18), (18, 19), (19, 20),    # 小指
-    (0, 17),                                    # 手掌下沿
-]
-
-
-def _draw_landmarks_on_frame(cv2, frame, lm_list, slot_label: str, gesture_label: str) -> None:
-    h, w = frame.shape[:2]
-    pts = [(int(lm.x * w), int(lm.y * h)) for lm in lm_list]
-    color = (37, 99, 235) if slot_label == "A" else (220, 38, 38)
-    for a, b in _HAND_CONNECTIONS:
-        if 0 <= a < len(pts) and 0 <= b < len(pts):
-            cv2.line(frame, pts[a], pts[b], color, 2, cv2.LINE_AA)
-    for px, py in pts:
-        cv2.circle(frame, (px, py), 4, color, -1, cv2.LINE_AA)
-
-    # 标签
-    try:
-        tx = int(lm_list[0].x * w) + 8
-        ty = int(lm_list[0].y * h) - 8
-        cv2.putText(
-            frame,
-            f"{slot_label}: {gesture_label}",
-            (tx, ty),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.6,
-            color,
-            2,
-            cv2.LINE_AA,
-        )
-    except Exception:
-        pass
-
-
-# ---------------------------------------------------------------------------
 # GestureEngine
 # ---------------------------------------------------------------------------
 class GestureEngine:
@@ -140,11 +100,16 @@ class GestureEngine:
         on_status: Callable[[str], None],
         on_fps: Callable[[float], None],
         on_send_text: Callable[[], None],
+        on_frame: Optional[Callable[["FrameSnapshot"], None]] = None,
     ):
         self._dispatch = dispatch_fn
         self._on_status = on_status
         self._on_fps = on_fps
         self._on_send_text = on_send_text
+        # Per-frame callback. When set, _loop pushes a FrameSnapshot each frame.
+        self._on_frame = on_frame
+        # Cached latest snapshot; main thread reads via latest_snapshot().
+        self._latest_snapshot: Optional["FrameSnapshot"] = None
 
         self.cfg: GestureConfig = load_gesture_config()
         self._semantics = GestureSemantics(self.cfg)
@@ -236,7 +201,6 @@ class GestureEngine:
 
         landmarker = None
         consecutive_read_failures = 0
-        preview_window_name = "Gesture Preview"
 
         try:
             base_options = python.BaseOptions(model_asset_path=model_path)
@@ -307,16 +271,15 @@ class GestureEngine:
                     # 预览模式仍要更新配对倒计时
                     self._semantics.process(hand_landmarks, handedness, on_send_text=None)
 
-                # 预览叠加 + OpenCV 窗口
-                if self.cfg.show_preview_window:
+                # 组装 FrameSnapshot 并推给 on_frame（如有订阅者）
+                snap = self._build_frame_snapshot(frame, hand_landmarks, handedness)
+                self._latest_snapshot = snap
+                if self._on_frame is not None:
                     try:
-                        self._draw_preview_overlay(
-                            cv2, frame, hand_landmarks, ps
-                        )
-                        cv2.imshow(preview_window_name, frame)
-                        cv2.waitKey(1)  # 让 OpenCV 处理窗口事件
+                        self._on_frame(snap)
                     except Exception:
-                        pass
+                        if os.environ.get("GESTURE_DEBUG"):
+                            traceback.print_exc()
 
                 # FPS
                 fps_frame_counter += 1
@@ -338,10 +301,6 @@ class GestureEngine:
                 cap.release()
             except Exception:
                 pass
-            try:
-                cv2.destroyWindow(preview_window_name)
-            except Exception:
-                pass
             self.running = False
             try:
                 self._on_fps(0.0)
@@ -349,59 +308,86 @@ class GestureEngine:
                 pass
 
     # ------------------------------------------------------------------
-    # 预览叠加
+    # 每帧 FrameSnapshot 组装
     # ------------------------------------------------------------------
-    def _draw_preview_overlay(self, cv2, frame, hand_landmarks, pairing_state: str) -> None:
+    def _build_frame_snapshot(self, frame, hand_landmarks, handedness) -> FrameSnapshot:
+        """Assemble a FrameSnapshot from one frame's worth of MediaPipe results.
+
+        The snapshot is immutable; the engine creates a new one per frame.
+        finger_states are derived from the same heuristics used by
+        ``self._semantics._classify_static`` so diagnostics stay in sync with
+        what the recognizer actually sees.
+        """
+        from .types import FrameSnapshot, HandSnapshot
+
         h, w = frame.shape[:2]
+        # frame_rgb = RGB888 bytes (Qt QImage 用 RGB888, 不是 BGR)
+        rgb = frame[:, :, ::-1].reshape(-1).tobytes() if frame is not None else None
 
-        # 顶栏：模式 + 配对状态
-        try:
-            mode_text = f"模式：{'单人主控' if self.cfg.operator_mode == 'single' else '双人协作'}"
-            swap_text = "（A/B 已交换）" if self.cfg.dual_roles_swapped else ""
-            top_line = mode_text + swap_text
-            cv2.rectangle(frame, (0, 0), (w, 32), (15, 23, 42), -1)
-            cv2.putText(frame, top_line, (10, 22),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.55, (241, 245, 249), 2, cv2.LINE_AA)
-            if self.cfg.preview_only:
-                cv2.putText(frame, "（仅预览）", (w - 110, 22),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (250, 204, 21), 2, cv2.LINE_AA)
-        except Exception:
-            pass
-
-        # 配对状态
-        if pairing_state and pairing_state != "IDLE":
-            try:
-                txt_map = {
-                    "WAITING": "请屏幕左侧协作者竖食指 1 秒",
-                    "CONFIRMED": "双人配对已确认 ✓",
-                    "EXPIRED": "双人配对超时（请重试）",
-                }
-                txt = txt_map.get(pairing_state, "")
-                if txt:
-                    cv2.rectangle(frame, (0, h - 36), (w, h), (15, 23, 42), -1)
-                    cv2.putText(frame, txt, (10, h - 12),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.55, (254, 240, 138), 2, cv2.LINE_AA)
-            except Exception:
-                pass
-
-        # 手部骨架
+        # 配对与槽位映射(沿用 semantics 的规则)
+        is_single = self.cfg.operator_mode == "single"
         swapped = self.cfg.dual_roles_swapped
-        for lm_list in hand_landmarks:
+
+        hands: List[HandSnapshot] = []
+        for idx, lm_list in enumerate(hand_landmarks or []):
             if not lm_list or len(lm_list) < 21:
                 continue
+            # 槽位
+            small_is_left = lm_list[0].x < 0.5
+            if swapped:
+                slot = "A" if not small_is_left else "B"
+            else:
+                slot = "A" if small_is_left else "B"
+            # 单人模式只看 A
+            if is_single and slot != "A":
+                continue
+            # 手指状态(来自 semantics._classify_static 的同套判定)
+            index_ext = lm_list[8].y < lm_list[6].y - 0.025
+            middle_ext = lm_list[12].y < lm_list[10].y - 0.025
+            ring_ext = lm_list[16].y < lm_list[14].y - 0.025
+            pinky_ext = lm_list[20].y < lm_list[18].y - 0.025
+            thumb_tip_y = lm_list[4].y
+            wrist_y = lm_list[0].y
+            thumb_up = thumb_tip_y < wrist_y - 0.08
+            thumb_down = thumb_tip_y > wrist_y + 0.10
+            # 用 semantics 内部方法拿到精确的 static_gesture 标签
+            static = self._semantics._classify_static(lm_list)
+            # confidence 来自 MediaPipe handedness
             try:
-                slot = "A" if lm_list[0].x < 0.5 else "B"
-                if swapped:
-                    slot = "B" if slot == "A" else "A"
+                conf = float(handedness[idx][0].score) if handedness and idx < len(handedness) else 0.0
             except Exception:
-                slot = "A"
+                conf = 0.0
+            # rising-edge recognized_event: 我们没在 _classify 之外追踪,用 None 简化;
+            # GesturePage 的试用面板已经有自己的 rising-edge 跟踪(poll bridge.recent_gestures())。
+            hands.append(HandSnapshot(
+                slot=slot,
+                wrist_xy=(float(lm_list[0].x), float(lm_list[0].y)),
+                finger_states={
+                    "thumb": thumb_up or (not thumb_down),  # 简化: 既非明确指下视为伸直
+                    "index": index_ext,
+                    "middle": middle_ext,
+                    "ring": ring_ext,
+                    "pinky": pinky_ext,
+                },
+                static_gesture=static,
+                confidence=conf,
+                recognized_event=None,
+            ))
 
-            gesture_label = "—"
-            try:
-                gesture_label = self._semantics._classify_static(lm_list)
-            except Exception:
-                pass
-            _draw_landmarks_on_frame(cv2, frame, lm_list, slot, gesture_label)
+        return FrameSnapshot(
+            timestamp_ms=int(time.monotonic() * 1000),
+            frame_rgb=rgb,
+            frame_w=w,
+            frame_h=h,
+            hands=hands,
+        )
+
+    def latest_snapshot(self) -> Optional[FrameSnapshot]:
+        """Most recent FrameSnapshot, or None if engine hasn't produced one yet.
+
+        Thread-safe under GIL (single-attribute read of an immutable object).
+        """
+        return self._latest_snapshot
 
     # ------------------------------------------------------------------
     # 回调安全封装（线程切换期间 UI 已退出也不应抛）
