@@ -367,7 +367,7 @@ class GesturePage(QWidget):
             target_h = max(1, int(target_w * snap.frame_h / max(snap.frame_w, 1)))
             scaled = img.scaled(target_w, target_h, Qt.KeepAspectRatio, Qt.SmoothTransformation)
             self._preview_label.setPixmap(QPixmap.fromImage(scaled))
-            dt_ms = (_t.perf_counter() - t0) * 1000
+            dt_ms = (time.perf_counter() - t0) * 1000
             new_scale = 1.0
             if dt_ms > 100:
                 new_scale = 0.25
