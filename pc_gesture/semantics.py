@@ -229,10 +229,44 @@ class GestureSemantics:
         thumb_extended = thumb_index_mcp_dist > thumb_extend_thr * size
 
         # 4 指状态(OK 软阈值用 ext_relaxed_y,其它严守 ext_strict_y)
+        # info.txt 二.1:仅用 Y 轴判断伸直,手侧放/倾斜时失效。
+        # 修复:加 2D 距离兜底 — 仅当 tip 与 pip 在同一 Y 水平(手侧放)时启用。
+        # 正常 Y 方向的手不进入这个分支,保持原有行为不变。
+        try:
+            amb_y = float(sens.get("ambiguous_y_tolerance", 0.005))
+        except (TypeError, ValueError):
+            amb_y = 0.005
+        try:
+            ext_2d_thr = float(sens.get("ext_2d_ratio", 0.85))
+        except (TypeError, ValueError):
+            ext_2d_thr = 0.85
+        mcp_for = {INDEX_TIP: INDEX_MCP, MIDDLE_TIP: MIDDLE_MCP,
+                   RING_TIP: RING_MCP, PINKY_TIP: PINKY_MCP}
+
         def ext_strict(tip_idx, pip_idx):
-            return lm[tip_idx].y < lm[pip_idx].y - ext_strict_y
+            # Y 方向明确 → 用 Y
+            if lm[tip_idx].y < lm[pip_idx].y - ext_strict_y:
+                return True
+            # Y 模糊(tip 与 pip 几乎同 Y,手侧放)→ 用 2D 距离
+            if abs(lm[tip_idx].y - lm[pip_idx].y) < amb_y:
+                d = _dist(
+                    lm[tip_idx].x, lm[tip_idx].y,
+                    lm[mcp_for[tip_idx]].x, lm[mcp_for[tip_idx]].y,
+                )
+                return d > ext_2d_thr * size
+            return False
+
         def ext_relaxed(tip_idx, pip_idx):
-            return lm[tip_idx].y < lm[pip_idx].y - ext_relaxed_y
+            if lm[tip_idx].y < lm[pip_idx].y - ext_relaxed_y:
+                return True
+            if abs(lm[tip_idx].y - lm[pip_idx].y) < amb_y:
+                d = _dist(
+                    lm[tip_idx].x, lm[tip_idx].y,
+                    lm[mcp_for[tip_idx]].x, lm[mcp_for[tip_idx]].y,
+                )
+                return d > ext_2d_thr * size  # 放松版用相同 2D 阈值(够严了)
+            return False
+
         def curled(tip_idx, pip_idx):
             return lm[tip_idx].y > lm[pip_idx].y + curl_y
 
@@ -257,7 +291,15 @@ class GestureSemantics:
             return self.G_OK
 
         # 2) L_SIGN — 拇横向 + 食指伸 + 其它卷 + 拇-食指分开
-        if thumb_extended and index_ext and middle_curled and ring_curled and pinky_curled and not thumb_touching:
+        # info.txt 二.3:之前 thumb_extended 阈值 0.18 太松,「微伸」也会被判 L。
+        # 修复:用更激进的 l_sign_thumb_extend_ratio(默认 0.30),让 L 必须明显伸出。
+        # POINTING_UP 用宽松阈值(0.18),防止 L_SIGN 抢占 POINTING_UP。
+        try:
+            l_thumb_thr = float(sens.get("l_sign_thumb_extend_ratio", 0.30))
+        except (TypeError, ValueError):
+            l_thumb_thr = 0.30
+        thumb_strongly_extended = thumb_index_mcp_dist > l_thumb_thr * size
+        if thumb_strongly_extended and index_ext and middle_curled and ring_curled and pinky_curled and not thumb_touching:
             return self.G_L_SIGN
 
         # 3) THREE_FINGERS — 拇横向 + 食+中伸 + 无名+小卷

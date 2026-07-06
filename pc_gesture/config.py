@@ -94,6 +94,13 @@ DEFAULT_GESTURE_CONFIG: Dict[str, Any] = {
         "pairing_pointing_up_s": 1.0,
         # 配对窗口:从 start_pairing 算起,此秒数内未确认则超时
         "pairing_window_ms": 3000,
+        # info.txt 二.1:Y 模糊时(hand sideways),2D 距离作为伸直兜底。
+        # 模糊判定:|tip.y - pip.y| < 此值 视为手侧放,启用 2D 距离判伸直。
+        "ambiguous_y_tolerance": 0.005,
+        # 2D 距离占手掌参考长度比例(伸直阈值,模糊时用)
+        "ext_2d_ratio": 0.85,
+        # info.txt 二.3:L_SIGN 需要拇指明显横向伸出,不能只是「微伸」
+        "l_sign_thumb_extend_ratio": 0.30,
     },
 }
 
