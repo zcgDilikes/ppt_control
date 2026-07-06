@@ -73,6 +73,27 @@ DEFAULT_GESTURE_CONFIG: Dict[str, Any] = {
         "debug_log": False,
         # 状态灯:低于此置信度视为识别不准(三色灯转黄)
         "low_confidence_threshold": 0.6,
+        # info.txt 五.1:硬编码魔法数字抽出到配置
+        # 拇-食指尖距离 / 手掌参考长度 < 此值 视为接触(OK 手势前提)
+        "thumb_touch_ratio": 0.08,
+        # 拇-食指距离 / 手掌参考长度 > 此值 视为伸直(L / 三指前提)
+        "thumb_extend_ratio": 0.18,
+        # 手指伸直 Y 偏移(归一化)。tip.y < pip.y - 此值 视为严格伸直
+        "ext_strict_y": 0.025,
+        # 手指伸直 Y 偏移(归一化,放松版)。tip.y < pip.y - 此值 视为伸直
+        # (OK 软阈值、PALM 用)
+        "ext_relaxed_y": 0.015,
+        # 手指卷曲 Y 偏移(归一化)。tip.y > pip.y + 此值 视为卷曲
+        "curl_y": 0.005,
+        # 手势持续 NONE 超过此秒数,auto-reset last_static_gesture
+        # (允许同一手势再次触发,无需切换到别的手势)
+        "static_reset_idle_s": 0.3,
+        # 手部消失超过此秒数,清理 slot 瞬时状态(冷却、最后手势、激光历史)
+        "hand_lost_cleanup_s": 0.5,
+        # 配对判定:某 slot pointing_up 持续此秒数即认为配对成功
+        "pairing_pointing_up_s": 1.0,
+        # 配对窗口:从 start_pairing 算起,此秒数内未确认则超时
+        "pairing_window_ms": 3000,
     },
 }
 

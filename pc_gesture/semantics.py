@@ -104,7 +104,12 @@ class GestureSemantics:
         self._pairing_active: bool = False
         self._pairing_started: float = 0.0
         self._pairing_confirmed: bool = False
-        self._pairing_window_ms: int = 3000
+        try:
+            self._pairing_window_ms: int = int(
+                self.cfg.sensitivity.get("pairing_window_ms", 3000)
+            )
+        except (TypeError, ValueError):
+            self._pairing_window_ms = 3000
 
     # ------------------------------------------------------------------
     # 配置热更新
@@ -127,7 +132,9 @@ class GestureSemantics:
     # ------------------------------------------------------------------
     # 配对（仅在 dual 模式下生效）
     # ------------------------------------------------------------------
-    def start_pairing(self, window_ms: int = 3000) -> None:
+    def start_pairing(self, window_ms: Optional[int] = None) -> None:
+        if window_ms is None:
+            window_ms = self._pairing_window_ms
         self._pairing_active = True
         self._pairing_started = time.monotonic()
         self._pairing_confirmed = False
@@ -182,8 +189,32 @@ class GestureSemantics:
           5. POINTING_UP — 拇卷 + 仅食指伸 + 中/无名/小指卷
           6. FIST        — 拇卷 + 食指卷 + 中/无名/小指卷
           7. PALM        — 拇横向伸 + 4 指都伸
+
+        info.txt 五.1:阈值从 cfg.sensitivity 读,默认值见 config.py。
         """
+        sens = self.cfg.sensitivity
         size = self._hand_size(lm)
+        # 异常配置 fallback 到默认值
+        try:
+            thumb_touch_thr = float(sens.get("thumb_touch_ratio", 0.08))
+        except (TypeError, ValueError):
+            thumb_touch_thr = 0.08
+        try:
+            thumb_extend_thr = float(sens.get("thumb_extend_ratio", 0.18))
+        except (TypeError, ValueError):
+            thumb_extend_thr = 0.18
+        try:
+            ext_strict_y = float(sens.get("ext_strict_y", 0.025))
+        except (TypeError, ValueError):
+            ext_strict_y = 0.025
+        try:
+            ext_relaxed_y = float(sens.get("ext_relaxed_y", 0.015))
+        except (TypeError, ValueError):
+            ext_relaxed_y = 0.015
+        try:
+            curl_y = float(sens.get("curl_y", 0.005))
+        except (TypeError, ValueError):
+            curl_y = 0.005
 
         # 拇指状态
         thumb_index_tip_dist = _dist(
@@ -194,19 +225,16 @@ class GestureSemantics:
             lm[THUMB_TIP].x, lm[THUMB_TIP].y,
             lm[INDEX_MCP].x, lm[INDEX_MCP].y,
         )
-        thumb_touching = thumb_index_tip_dist < 0.08 * size
-        thumb_extended = thumb_index_mcp_dist > 0.18 * size
+        thumb_touching = thumb_index_tip_dist < thumb_touch_thr * size
+        thumb_extended = thumb_index_mcp_dist > thumb_extend_thr * size
 
-        # 4 指状态(OK 软阈值 -0.015,其它严守 -0.025)
-        # info.txt 二.1:仅用 Y 轴判断伸直,手侧放/倾斜时失效。
-        # 备注:实测发现加 2D 距离辅助会破坏现有合成测试数据(测试把所有 MCP 集中在
-        # 同一坐标,2D 距离判不准),且真实手 Y 轴判断已经够用。这一条留作 future work。
+        # 4 指状态(OK 软阈值用 ext_relaxed_y,其它严守 ext_strict_y)
         def ext_strict(tip_idx, pip_idx):
-            return lm[tip_idx].y < lm[pip_idx].y - 0.025
+            return lm[tip_idx].y < lm[pip_idx].y - ext_strict_y
         def ext_relaxed(tip_idx, pip_idx):
-            return lm[tip_idx].y < lm[pip_idx].y - 0.015
+            return lm[tip_idx].y < lm[pip_idx].y - ext_relaxed_y
         def curled(tip_idx, pip_idx):
-            return lm[tip_idx].y > lm[pip_idx].y + 0.005
+            return lm[tip_idx].y > lm[pip_idx].y + curl_y
 
         index_ext = ext_strict(INDEX_TIP, INDEX_PIP)
         middle_ext = ext_strict(MIDDLE_TIP, MIDDLE_PIP)
@@ -328,12 +356,16 @@ class GestureSemantics:
         # 配对窗口中：A 槽（屏幕左）持续 pointing_up 满 1 秒 → 确认
         self._update_pairing(now)
 
-# 没出现在本帧的槽位:清理与该手相关的瞬时状态
-        # info.txt 三.1:手部消失 0.5s 后,也要清空 last_static_gesture + 冷却,
+        # 没出现在本帧的槽位:清理与该手相关的瞬时状态
+        # info.txt 三.1:手部消失 hand_lost_cleanup_s 后,也要清空 last_static_gesture + 冷却,
         # 否则手重新入画面会等冷却走完才能再次触发。
+        try:
+            hand_lost_s = float(sens.get("hand_lost_cleanup_s", 0.5))
+        except (TypeError, ValueError):
+            hand_lost_s = 0.5
         for slot, st in self._slots.items():
             if slot not in active_slots:
-                if now - st.last_seen_monotonic > 0.5:
+                if now - st.last_seen_monotonic > hand_lost_s:
                     st.pinching = False
                     st.laser_last_xy = None
                     st.pointing_up_start = None
@@ -407,11 +439,15 @@ class GestureSemantics:
             (not is_single and slot in ("A", "B"))
         )
 
-        # 自动重置 last_static_gesture:当用户把手放下回到 NONE 持续 ~300ms,
+        # 自动重置 last_static_gesture:当用户把手放下回到 NONE 持续 static_reset_idle_s 秒,
         # 允许同一手势再次触发(不强制用户先切到别的再切回来)。这是「连点 OK」灵敏度的关键。
+        try:
+            reset_idle_s = float(sens.get("static_reset_idle_s", 0.3))
+        except (TypeError, ValueError):
+            reset_idle_s = 0.3
         if gesture != self.G_NONE:
             st.last_static_at = now
-        elif st.last_static_gesture != self.G_NONE and (now - st.last_static_at) > 0.3:
+        elif st.last_static_gesture != self.G_NONE and (now - st.last_static_at) > reset_idle_s:
             st.last_static_gesture = self.G_NONE  # auto-reset
 
         if produce_static and gesture in (
@@ -496,11 +532,16 @@ class GestureSemantics:
             return
 
         # 任一 slot 正在 pointing_up,各自独立累计
+        # 配对成功所需 pointing_up 持续秒数(从 sens 读,fallback 1.0)
+        try:
+            pointing_up_s = float(self.cfg.sensitivity.get("pairing_pointing_up_s", 1.0))
+        except (TypeError, ValueError):
+            pointing_up_s = 1.0
         for slot in self._slots.values():
             if slot.last_static_gesture == self.G_POINTING_UP:
                 if slot.pointing_up_start is None:
                     slot.pointing_up_start = now
-                elif (now - slot.pointing_up_start) >= 1.0:
+                elif (now - slot.pointing_up_start) >= pointing_up_s:
                     self._pairing_confirmed = True
                     return
             else:
