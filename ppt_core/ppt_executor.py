@@ -54,6 +54,51 @@ try:
 except Exception:  # pragma: no cover - exercised only without pyperclip
     _pyperclip = None  # type: ignore[assignment]
 
+# ``win32com`` + ``pythoncom`` are used to drive PowerPoint directly via its
+# COM API. This bypasses the focus issue that plagues pyautogui when our
+# Qt app has keyboard focus — synthetic keys sent via pyautogui go to the
+# focused window (Qt), not the slideshow window (PowerPoint). COM drives
+# the slideshow regardless of focus. Patterned after ppt_notes._ensure_pywin32.
+_wc = None  # type: ignore[var-annotated]
+
+
+def _ensure_pywin32() -> bool:
+    """Lazily import ``win32com.client``. Returns True on success."""
+    global _wc
+    if _wc is not None:
+        return True
+    try:
+        import win32com.client as wc  # type: ignore[import-not-found]
+    except ImportError:
+        return False
+    _wc = wc
+    return True
+
+
+def _ppt_show_view():
+    """Return the active PowerPoint slideshow View, or None if not available.
+
+    Walks ``GetObject("PowerPoint.Application")`` → ``SlideShowWindows`` →
+    first window's ``View``. Returns None on any failure (PPT not running,
+    no active slideshow, pywin32 missing).
+    """
+    if not _ensure_pywin32():
+        return None
+    try:
+        app = _wc.GetObject("PowerPoint.Application")
+        windows = app.SlideShowWindows
+        if windows.Count < 1:
+            return None
+        return windows.Item(1).View
+    except Exception:
+        return None
+
+
+# SlideShowState enum (msotn.OL 12.0). Hard-coded to avoid the COM typelib
+# import requirement at module load.
+_PP_STATE_BLACK_SCREEN = 9   # ppSlideShowBlackScreen
+_PP_STATE_WHITE_SCREEN = 10  # ppSlideShowWhiteScreen
+
 
 # PowerPoint file extensions accepted by ``OPEN_PPT``.  Provided as a module
 # constant so callers (e.g. file upload validators) can import it without
@@ -102,15 +147,23 @@ class PptExecutor:
         cmd = d.get("cmd")
 
         if cmd == "NEXT_PAGE":
-            self._press("pagedown")
+            # COM 优先:不受焦点问题影响;fallback 到 pyautogui("pagedown")
+            if not self._show_view_next():
+                self._press("pagedown")
             return
 
         if cmd == "PREV_PAGE":
-            self._press("pageup")
+            if not self._show_view_previous():
+                self._press("pageup")
             return
 
         if cmd == "FULL_SCREEN":
-            self._press("f5")
+            # 没有活跃放映 → 启动;已在放映 → 退出(避免重复触发)
+            if _ppt_show_view() is not None:
+                if not self._show_view_exit():
+                    self._press("esc")
+            else:
+                self._press("f5")
             return
 
         if cmd == "FROM_CURRENT":
@@ -118,15 +171,18 @@ class PptExecutor:
             return
 
         if cmd == "BLACK_SCREEN":
-            self._press("b")
+            if not self._show_view_set_state(_PP_STATE_BLACK_SCREEN):
+                self._press("b")
             return
 
         if cmd == "WHITE_SCREEN":
-            self._press("w")
+            if not self._show_view_set_state(_PP_STATE_WHITE_SCREEN):
+                self._press("w")
             return
 
         if cmd == "EXIT":
-            self._press("esc")
+            if not self._show_view_exit():
+                self._press("esc")
             return
 
         if cmd == "SEND_TEXT":
@@ -164,6 +220,48 @@ class PptExecutor:
         # Unknown cmd — ignored silently, per dispatcher contract.
 
     # ----------------------------------------------------------------- private
+
+    def _show_view_next(self) -> bool:
+        """COM ``SlideShowWindows(1).View.Next()``. True on success."""
+        view = _ppt_show_view()
+        if view is None:
+            return False
+        try:
+            view.Next()
+            return True
+        except Exception:
+            return False
+
+    def _show_view_previous(self) -> bool:
+        view = _ppt_show_view()
+        if view is None:
+            return False
+        try:
+            view.Previous()
+            return True
+        except Exception:
+            return False
+
+    def _show_view_exit(self) -> bool:
+        view = _ppt_show_view()
+        if view is None:
+            return False
+        try:
+            view.Exit()
+            return True
+        except Exception:
+            return False
+
+    def _show_view_set_state(self, state: int) -> bool:
+        """COM ``View.State = <state>``. Used for black/white screen."""
+        view = _ppt_show_view()
+        if view is None:
+            return False
+        try:
+            view.State = state
+            return True
+        except Exception:
+            return False
 
     def _press(self, key: str) -> None:
         if _pyautogui is None:
