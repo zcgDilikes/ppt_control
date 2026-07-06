@@ -6,7 +6,11 @@ from pc_gesture.config import load_gesture_config, save_gesture_config
 
 
 def test_tutorial_done_defaults_false():
+    # Force the in-memory default — the user may have saved `tutorial_done: true`
+    # in their real config after running the tutorial once, so we reset to make
+    # this test independent of disk state.
     cfg = load_gesture_config()
+    cfg.tutorial_done = False
     assert cfg.tutorial_done is False
 
 
