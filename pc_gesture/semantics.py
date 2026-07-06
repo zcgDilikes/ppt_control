@@ -66,18 +66,15 @@ def _dist(ax: float, ay: float, bx: float, by: float) -> float:
 class HandState:
     slot: str = ""                                   # "A" or "B"
     last_seen_monotonic: float = 0.0
-    # 上一次识别的手势类别（用于防抖/冷却）
+    # 上一次识别的手势类别(用于防抖/冷却)
     last_static_gesture: str = "NONE"                # OK / L_SIGN / THREE_FINGERS / POINTING_UP / SCISSORS / FIST / PALM / NONE
-    last_static_at: float = 0.0                   # 上一次识别到非 NONE 手势的 wall-clock,用于 auto-reset
+    last_static_at: float = 0.0                      # 上一次识别到非 NONE 手势的 wall-clock,用于 auto-reset
     static_cooldown_until: float = 0.0
     # 捏合迟滞
     pinching: bool = False
-    # 托掌持续时长
-    palm_hold_start: Optional[float] = None  # 已弃用:旧设计「托掌 1.8s 发文本」已删除
-    palm_hold_fired: bool = False            # 已弃用
-    # 激光上一帧坐标（用于 EMA）
+    # 激光上一帧坐标(用于 EMA)
     laser_last_xy: Optional[Tuple[float, float]] = None
-    # 配对确认累计：slot A 在 pointing_up 上稳定了多久
+    # 配对确认累计:某 slot 在 pointing_up 上稳定了多久
     pointing_up_start: Optional[float] = None
 
 
@@ -117,10 +114,15 @@ class GestureSemantics:
         # 清空运行时状态，避免旧阈值下的历史造成误判
         for slot in self._slots.values():
             slot.last_static_gesture = self.G_NONE
+            slot.last_static_at = 0.0
             slot.static_cooldown_until = 0.0
             slot.pinching = False
             slot.laser_last_xy = None
             slot.pointing_up_start = None
+        # info.txt 三.2:热更新配置时也重置配对状态,避免新旧阈值冲突
+        self._pairing_active = False
+        self._pairing_confirmed = False
+        self._pairing_started = 0.0
 
     # ------------------------------------------------------------------
     # 配对（仅在 dual 模式下生效）
@@ -161,8 +163,13 @@ class GestureSemantics:
     # ------------------------------------------------------------------
     @staticmethod
     def _hand_size(lm) -> float:
-        """以 wrist→middle MCP 距离作为手掌参考长度（归一化坐标下通常 0.15~0.35）。"""
-        return max(_dist(lm[WRIST].x, lm[WRIST].y, lm[MIDDLE_MCP].x, lm[MIDDLE_MCP].y), 1e-3)
+        """以 wrist→middle MCP 距离作为手掌参考长度(归一化坐标下通常 0.15~0.35)。
+
+        双向夹紧:极端近距离手部时 size 趋近 0 会除以极小值造成距离归一化爆炸;
+        极端远距离时 size 超过 0.5 也是异常(超过真人手部比例)。
+        """
+        raw = _dist(lm[WRIST].x, lm[WRIST].y, lm[MIDDLE_MCP].x, lm[MIDDLE_MCP].y)
+        return min(max(raw, 0.05), 0.5)
 
     def _classify_static(self, lm) -> str:
         """返回 7 个新 enum 之一(NONE / OK / L_SIGN / THREE_FINGERS / POINTING_UP / SCISSORS / FIST / PALM)。
@@ -295,15 +302,19 @@ class GestureSemantics:
         # 配对窗口中：A 槽（屏幕左）持续 pointing_up 满 1 秒 → 确认
         self._update_pairing(now)
 
-        # 没出现在本帧的槽位：清理与该手相关的瞬时状态（pinch/tap/wrist 历史）
-        # 但保留静态手势冷却，避免画面外短暂消失就重置
+# 没出现在本帧的槽位:清理与该手相关的瞬时状态
+        # info.txt 三.1:手部消失 0.5s 后,也要清空 last_static_gesture + 冷却,
+        # 否则手重新入画面会等冷却走完才能再次触发。
         for slot, st in self._slots.items():
             if slot not in active_slots:
-                # 失联超过 500ms，重置瞬时状态
                 if now - st.last_seen_monotonic > 0.5:
                     st.pinching = False
                     st.laser_last_xy = None
                     st.pointing_up_start = None
+                    # 重置手势状态,让手重新入画面能立即响应
+                    st.last_static_gesture = self.G_NONE
+                    st.last_static_at = 0.0
+                    st.static_cooldown_until = 0.0
 
         return events
 
@@ -334,7 +345,11 @@ class GestureSemantics:
         if produce_laser and gesture == self.G_POINTING_UP:
             tx = float(lm[INDEX_TIP].x)
             ty = float(lm[INDEX_TIP].y)
-            smoothing = float(sens.get("laser_smoothing", 0.55))
+            # info.txt 六.3:异常兜底。配置可能传字符串/None/负数,不再直接报错。
+            try:
+                smoothing = float(sens.get("laser_smoothing", 0.55))
+            except (TypeError, ValueError):
+                smoothing = 0.55
             smoothing = max(0.0, min(0.95, smoothing))
             if st.laser_last_xy is not None:
                 tx = smoothing * st.laser_last_xy[0] + (1.0 - smoothing) * tx
@@ -345,7 +360,7 @@ class GestureSemantics:
             # on transitions only, while laser motion streams every frame.
             events.append({"cmd": "LASER", "x": tx, "y": ty, "source": f"gesture:{slot}"})
         else:
-            # 非 pointing_up → 停止激光平滑（下次重新起步）
+            # 非 pointing_up → 停止激光平滑(下次重新起步)
             st.laser_last_xy = None
 
         # ----- 2) 一次性静态手势（带冷却） -----
@@ -372,8 +387,10 @@ class GestureSemantics:
             cooldown_ms = int(sens.get("gesture_cooldown_ms", 400))  # 默认 400ms(原 800ms 太慢)
             # 修复:now 是 time.monotonic() 秒,static_cooldown_until 也是秒。直接比较,不要乘 1000。
             # 旧逻辑 now * 1000.0 >= static_cooldown_until 单位不匹配,冷却形同虚设。
+            debug_log = sens.get("debug_log", False)
             if now >= st.static_cooldown_until and cooldown_ms > 0:
-                print(f"[semantics] 🎯 识别 {gesture} (slot={slot}) → 派发 type=gesture")
+                if debug_log:
+                    print(f"[semantics] 🎯 识别 {gesture} (slot={slot}) → 派发 type=gesture")
                 events.append({
                     "type": "gesture",
                     "gesture": gesture,
@@ -382,7 +399,8 @@ class GestureSemantics:
                 })
                 st.static_cooldown_until = now + cooldown_ms / 1000.0
             else:
-                print(f"[semantics] ⏸️  {gesture} 被冷却挡住 ({now - st.static_cooldown_until:.2f}s 剩余)")
+                if debug_log:
+                    print(f"[semantics] ⏸️  {gesture} 被冷却挡住 ({now - st.static_cooldown_until:.2f}s 剩余)")
         st.last_static_gesture = gesture
 
         # ----- 3) 捏合 → 点击（迟滞防抖） -----
@@ -402,23 +420,26 @@ class GestureSemantics:
         return events
 
     # ------------------------------------------------------------------
-    # 配对判定：A 槽 pointing_up 持续 ≥ 1 秒 → 确认
+    # 配对判定:任意槽 pointing_up 持续 ≥ 1 秒 → 确认
+    # info.txt 一.3:之前硬编码只看 slot A,dual_roles_swapped=True 时配对失效。
+    # 修复:扫描所有 slot,任意一个正在做 pointing_up 都开始累计;任一达到 1s 即可确认。
     # ------------------------------------------------------------------
     def _update_pairing(self, now: float) -> None:
         if not self._pairing_active or self._pairing_confirmed:
             return
         elapsed_ms = (now - self._pairing_started) * 1000.0
         if elapsed_ms > self._pairing_window_ms:
-            # 超时：本次配对失败
+            # 超时:本次配对失败
             self._pairing_active = False
             return
 
-        st_a = self._slots["A"]
-        # A 槽 pointing_up 稳定时长
-        if st_a.last_static_gesture == self.G_POINTING_UP:
-            if st_a.pointing_up_start is None:
-                st_a.pointing_up_start = now
-            elif (now - st_a.pointing_up_start) >= 1.0:
-                self._pairing_confirmed = True
-        else:
-            st_a.pointing_up_start = None
+        # 任一 slot 正在 pointing_up,各自独立累计
+        for slot in self._slots.values():
+            if slot.last_static_gesture == self.G_POINTING_UP:
+                if slot.pointing_up_start is None:
+                    slot.pointing_up_start = now
+                elif (now - slot.pointing_up_start) >= 1.0:
+                    self._pairing_confirmed = True
+                    return
+            else:
+                slot.pointing_up_start = None

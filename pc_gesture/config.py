@@ -69,6 +69,8 @@ DEFAULT_GESTURE_CONFIG: Dict[str, Any] = {
         "gesture_cooldown_ms": 400,
         # 激光平滑：0 = 不滤波（直接抖动），1 = 上一帧权重 100%（不响应）
         "laser_smoothing": 0.55,
+        # 调试日志开关:True 时 [semantics]/[bridge] 在终端打日志,默认关(生产环境无 IO 损耗)
+        "debug_log": False,
         # 状态灯:低于此置信度视为识别不准(三色灯转黄)
         "low_confidence_threshold": 0.6,
     },
