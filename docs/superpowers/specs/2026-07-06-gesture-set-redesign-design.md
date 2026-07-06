@@ -67,7 +67,7 @@ PPT 控制要求每个手势都不能产生歧义和错误。本 spec 用一组*
 
 | 文件 | 改动 |
 |------|------|
-| `pc_gesture/config.py` | `GESTURES` tuple 整个换（7 新 enum）；`DEFAULT_BINDINGS` 整个换；常量同步 |
+| `pc_gesture/config.py` | `GESTURES` tuple 整个换（7 新 enum）；`DEFAULT_BINDINGS` 整个换（按 §1 表格"默认动作"列：`OK=NEXT_PAGE`, `SCISSORS=PREV_PAGE`, `FIST=BLACK_SCREEN`, `PALM=EXIT`, `THREE_FINGERS=WHITE_SCREEN`, `L_SIGN=FULL_SCREEN`, `POINTING_UP` 不绑定—激光由 rising-edge 持续发射不走 bindings）；常量同步 |
 | `pc_gesture/semantics.py` | `_classify_static` 重写（按 §1 优先级链）；`G_*` 类常量加 OK/SCISSORS/THREE_FINGERS/L_SIGN；删除 SWIPE 类常量 |
 | `pc_gesture/engine.py` | 无改动（语义层变了它自动跟着变） |
 | `ppt_qt/pages/gesture_page.py` | `_GESTURE_META` dict 改（7 个新 emoji + 中文名）；删除 SWIPE 元数据 |
