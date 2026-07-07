@@ -108,6 +108,8 @@ class GestureSemantics:
         }
         # 配对(info.txt 六.2:抽到独立 PairingService,semantics 只负责喂状态)
         self._pairing = PairingService(self.cfg.sensitivity)
+        # interlock dwell 计时起点(2026-07-07:必须初始化,否则首帧 _detect_interlock 会 AttributeError)
+        self._interlock_start: Optional[float] = None
 
     # ------------------------------------------------------------------
     # 配置热更新
@@ -141,6 +143,8 @@ class GestureSemantics:
         self._pairing.reset()
         # PairingService 也要更新 sensitivity 引用
         self._pairing = PairingService(self.cfg.sensitivity)
+        # interlock dwell 也重置(2026-07-07:与配对 reset 同等待遇)
+        self._interlock_start = None
 
     # ------------------------------------------------------------------
     # 配对(委托给 PairingService)
@@ -366,6 +370,45 @@ class GestureSemantics:
         if d < threshold:
             return name
         return "NONE"
+
+    def _detect_interlock(self, lm_a, lm_b, now: float) -> bool:
+        """9-events design spec 2026-07-07: 双手十指相扣检测。
+
+        3 个条件(任一不满足返回 False):
+        1. 两 wrist 距离 < interlock_max_wrist_dist(默认 0.20,归一化坐标)
+        2. 10 指尖两两均值距离 < interlock_max_tip_dist(默认 0.40,归一化坐标)
+        3. 上述条件持续 ≥ interlock_min_dwell_s(默认 0.3s)
+
+        维护 self._interlock_start 实例属性(条件首次同时满足的时间)。
+        """
+        if not lm_a or not lm_b or len(lm_a) < 21 or len(lm_b) < 21:
+            self._interlock_start = None
+            return False
+        try:
+            sens = self.cfg.sensitivity
+            max_wrist = float(sens.get("interlock_max_wrist_dist", 0.20))
+            max_tip = float(sens.get("interlock_max_tip_dist", 0.40))
+            dwell = float(sens.get("interlock_min_dwell_s", 0.3))
+        except (TypeError, ValueError):
+            return False
+        wrist_d = _dist(lm_a[WRIST].x, lm_a[WRIST].y, lm_b[WRIST].x, lm_b[WRIST].y)
+        if wrist_d > max_wrist:
+            self._interlock_start = None
+            return False
+        tips_a = [lm_a[i] for i in (THUMB_TIP, INDEX_TIP, MIDDLE_TIP, RING_TIP, PINKY_TIP)]
+        tips_b = [lm_b[i] for i in (THUMB_TIP, INDEX_TIP, MIDDLE_TIP, RING_TIP, PINKY_TIP)]
+        cross = [
+            _dist(a.x, a.y, b.x, b.y)
+            for a in tips_a for b in tips_b
+        ]
+        if sum(cross) / len(cross) > max_tip:
+            self._interlock_start = None
+            return False
+        # 两条件满足,dwell 检查
+        if self._interlock_start is None:
+            self._interlock_start = now
+            return False
+        return (now - self._interlock_start) >= dwell
 
     def _is_pinching(self, lm, pinch_th: float, pinch_rel: float) -> bool:
         """拇指尖与食指尖的距离 / 手掌参考长度。"""
