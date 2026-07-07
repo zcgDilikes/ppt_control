@@ -43,7 +43,21 @@ pending_laser_dx = 0.0
 pending_laser_dy = 0.0
 click_queue = deque()
 # 后台下载与鼠标线程分离；锁避免多任务同时写同一保存路径导致文件损坏
-download_file_lock = Lock()
+# kasi.txt [26]:之前用全局 download_file_lock,所有下载串行化(同时只能下载 1 个)。
+# 改成"按文件名 hash 分桶"锁,不同文件可并行,同名文件(可能覆盖场景)仍串行。
+# 用 64 桶 hash 分布,锁竞争概率 = 1/64,几乎无锁。
+_download_locks: Dict[str, Lock] = {}
+_download_locks_guard = Lock()
+
+
+def _get_download_lock(key: str) -> Lock:
+    """按 key(通常是文件路径)取一个分桶锁,同 key 串行,不同 key 并行"""
+    with _download_locks_guard:
+        lk = _download_locks.get(key)
+        if lk is None:
+            lk = Lock()
+            _download_locks[key] = lk
+        return lk
 
 LASER_SENS = 6
 
@@ -723,16 +737,17 @@ def save_room_id(rid: str) -> None:
 # 文件下载函数
 # ==========================================
 def download_file(uri):
-    """同步下载（可在任意线程调用）。内部持锁，多任务排队执行以免并发写同一文件名。"""
-    with download_file_lock:
+    """同步下载（可在任意线程调用）。内部按文件名持分桶锁,
+    不同文件可并行下载,同名文件串行以免覆盖。"""
+    file_url = SERVER_BASE + uri
+    file_name = os.path.basename(file_url.split("?")[0])
+    save_path = os.path.join(SAVE_DIR, file_name)
+    abs_path = os.path.abspath(save_path)
+    # kasi.txt [26]:用分桶锁(按文件路径)替代全局锁,允许多文件并行下载
+    file_lock = _get_download_lock(abs_path)
+    with file_lock:
         try:
-            file_url = SERVER_BASE + uri
             print(f"📥 开始下载：{file_url}")
-
-            file_name = os.path.basename(file_url.split("?")[0])
-            save_path = os.path.join(SAVE_DIR, file_name)
-
-            abs_path = os.path.abspath(save_path)
 
             resp = requests.get(file_url, stream=True, timeout=30)
             resp.raise_for_status()
@@ -985,22 +1000,36 @@ def dispatch_remote_command(data: dict, source: str = "ws") -> None:
             with state_lock:
                 pending_laser_dx += float(data["dx"])
                 pending_laser_dy += float(data["dy"])
+            _notify_mouse_thread()  # kasi.txt [30]:唤醒消费者
             return
         with state_lock:
             latest_msg = json.dumps(data, ensure_ascii=False)
+        _notify_mouse_thread()
         return
     if cmd == "MOUSE_CLICK":
         cnt = int(data.get("count", 1))
         with state_lock:
             click_queue.append(cnt)
+        _notify_mouse_thread()
         return
     with state_lock:
         latest_msg = json.dumps(data, ensure_ascii=False)
+    _notify_mouse_thread()
 
 
 # ==========================================
 # 独立鼠标线程
 # ==========================================
+# kasi.txt [4] + [30]:之前每 8ms time.sleep 忙等,无消息也 125Hz 唤醒
+# 持续空转 CPU。改 Event 阻塞:有消息时 set,处理完 clear。
+_mouse_wake = threading.Event()
+
+
+def _notify_mouse_thread() -> None:
+    """唤醒 mouse_render_thread(生产者调用)"""
+    _mouse_wake.set()
+
+
 def mouse_render_thread():
     global latest_msg, screen_w, screen_h, pending_laser_dx, pending_laser_dy
     import pyautogui
@@ -1008,6 +1037,10 @@ def mouse_render_thread():
     screen_w, screen_h = pyautogui.size()
 
     while True:
+        # kasi.txt [4] + [30]:Event 阻塞。无消息时 OS 挂起线程,
+        # 有消息时 set() 立即唤醒,比 8ms 忙等省 99% 空转 CPU。
+        _mouse_wake.wait(timeout=0.5)  # 500ms 兜底,处理 stop 标志或清旧状态
+        _mouse_wake.clear()
         try:
             clicks_to_run = []
             pdx = 0.0
@@ -1043,8 +1076,6 @@ def mouse_render_thread():
 
         except Exception:
             pass
-
-        time.sleep(0.008)
 
 
 Thread(target=mouse_render_thread, daemon=True).start()

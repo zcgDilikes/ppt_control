@@ -233,13 +233,16 @@ class GestureEngine:
                     continue
                 consecutive_read_failures = 0
 
-                # 镜像
-                if self.cfg.mirror:
-                    frame = cv2.flip(frame, 1)
-
-                # MediaPipe 推理
+                # kasi.txt [18]:cv2.flip + cv2.cvtColor 两次调用,1080p ~5ms/帧。
+                # 合并为一次 numpy slice:[:, ::-1, ::-1] 一次完成镜像 + BGR→RGB。
+                # MediaPipe 需要可写 buffer(.copy() 强制拷贝)。
+                # 不再调 cv2.flip:frame 保留原始 BGR;snapshot 自己处理镜像+RGB
+                # (见 _build_frame_snapshot 用 [:, ::-1, ::-1])。
                 try:
-                    rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                    if self.cfg.mirror:
+                        rgb = frame[:, ::-1, ::-1].copy()  # 镜像 + BGR→RGB
+                    else:
+                        rgb = frame[:, :, ::-1].copy()     # BGR→RGB only
                     mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
                     result = landmarker.detect(mp_image)
                     hand_landmarks = result.hand_landmarks or []
@@ -327,9 +330,13 @@ class GestureEngine:
         h, w = frame.shape[:2]
         # kasi.txt [9]:仅在有消费者时分配 frame_rgb;否则 frame_rgb=None 节省
         # 1080p@30fps ~186MB/s 内存带宽。无消费者(只用手势事件)零开销。
+        # kasi.txt [18]:frame 现在是原始 BGR(不再 cv2.flip),这里自己处理
+        # 镜像 + BGR→RGB 一次完成。
         if self._on_frame is not None and frame is not None:
-            # frame_rgb = RGB888 bytes (Qt QImage 用 RGB888, 不是 BGR)
-            rgb = frame[:, :, ::-1].reshape(-1).tobytes()
+            if self.cfg.mirror:
+                rgb = frame[:, ::-1, ::-1].reshape(-1).tobytes()
+            else:
+                rgb = frame[:, :, ::-1].reshape(-1).tobytes()
         else:
             rgb = None
 
