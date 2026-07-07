@@ -73,7 +73,10 @@ class WsClient(QThread):
     # Backoff schedule for reconnect attempts after a failed connection.
     _BACKOFF_INITIAL_S = 1.0
     _BACKOFF_FACTOR = 2.0
-    _BACKOFF_CAP_S = 16.0
+    # kasi.txt [31]:之前 _BACKOFF_CAP_S=16 但 _BACKOFF_HARD_CAP_S=30,
+    # wait_s = min(delay, _BACKOFF_HARD_CAP_S) 永远 ≤ 16,30s 形同虚设。
+    # 把 _BACKOFF_CAP_S 调大到 30,与 hard cap 一致。
+    _BACKOFF_CAP_S = 30.0
     _BACKOFF_HARD_CAP_S = 30.0
 
     def __init__(

@@ -285,14 +285,21 @@ class GestureEngine:
                             traceback.print_exc()
 
                 # FPS
+                # kasi.txt [33]:之前 1 秒窗口 FPS 显示滞后 1s。
+                # 改 EMA:每 0.5s 更新一次瞬时 FPS,瞬时 FPS 与历史 EMA
+                # 7:3 加权(瞬时更新但有平滑)。
                 fps_frame_counter += 1
                 now = time.monotonic()
-                if now - fps_last_t >= 1.0:
-                    fps = fps_frame_counter / (now - fps_last_t)
+                if now - fps_last_t >= 0.5:
+                    instant_fps = fps_frame_counter / (now - fps_last_t)
+                    if getattr(self, "_ema_fps", 0.0) > 0.0:
+                        self._ema_fps = 0.7 * self._ema_fps + 0.3 * instant_fps
+                    else:
+                        self._ema_fps = instant_fps
                     fps_frame_counter = 0
                     fps_last_t = now
                     try:
-                        self._on_fps(fps)
+                        self._on_fps(self._ema_fps)
                     except Exception:
                         pass
         except Exception as e:
