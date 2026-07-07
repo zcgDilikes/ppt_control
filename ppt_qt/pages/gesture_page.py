@@ -484,9 +484,12 @@ class GesturePage(QWidget):
             color = {"red": "#ef4444", "yellow": "#eab308", "green": "#22c55e"}.get(light, "#6b7280")
             if self._teaching_check.isChecked():
                 color = "#3b82f6"  # 教学:蓝色
-        self._status_light.setStyleSheet(
-            f"background:{color};border-radius:10px;border:2px solid #1f2937;"
-        )
+        # kasi.txt [41]:每帧 setStyleSheet 触发 stylesheet 重新计算,
+        # 即使 color 没变也跑。加 prev_color 缓存,变了才 setStyleSheet。
+        new_ss = f"background:{color};border-radius:10px;border:2px solid #1f2937;"
+        if getattr(self, "_status_light_prev_ss", None) != new_ss:
+            self._status_light.setStyleSheet(new_ss)
+            self._status_light_prev_ss = new_ss
 
     def _update_diagnostics(self, snap):
         if snap is None or not snap.hands:

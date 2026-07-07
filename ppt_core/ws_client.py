@@ -259,6 +259,10 @@ class WsClient(QThread):
                     self._handle_mini_hello(ws, data)
                     continue
                 if cmd in ("ONLINE", "OFFLINE"):
+                    # error.txt [5]:online/offline 也需要校验 roomId,
+                    # 否则跨房间 ONLINE 帧会污染当前 session。
+                    if not self._room_id_matches(data):
+                        continue
                     if self._on_mobile_presence is not None:
                         try:
                             self._on_mobile_presence(cmd == "ONLINE")
@@ -266,12 +270,28 @@ class WsClient(QThread):
                             pass
                     continue
                 if cmd in ("LASER", "MOUSE_CLICK"):
+                    # error.txt [5]:LASER/MOUSE_CLICK 之前绕过 roomId 校验,
+                    # 同 WS 实例跨房间转发时会被劫持鼠标。补上校验。
+                    if not self._room_id_matches(data):
+                        continue
                     self._dispatch(data)
                     continue
                 self._dispatch(data)
         except Exception as e:
             return e
         return None
+
+    def _room_id_matches(self, data: dict) -> bool:
+        """Return True iff ``data["roomId"]`` (if present) matches the
+        bound ``self._room_id``.  Missing/empty roomId → reject (defensive).
+        """
+        msg_room = data.get("roomId")
+        if msg_room is None:
+            return False
+        try:
+            return str(msg_room).strip().upper() == str(self._room_id).strip().upper()
+        except Exception:
+            return False
 
     def _handle_mini_hello(self, ws, data: dict) -> None:
         """Validate the phone-side handshake version."""

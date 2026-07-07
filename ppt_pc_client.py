@@ -17,6 +17,21 @@ from collections import deque
 from pynput.mouse import Controller, Button
 from threading import Lock, Thread
 
+# kasi.txt [3]:execute_command 每个分支都 `import pyautogui`,虽然 sys.modules
+# 缓存但仍有 attribute lookup 开销,且在 hot path。提到顶部统一导入。
+# 注:pyautogui/pyperclip 可能未安装,延迟 import 仅在调用时(但模块级 try 已保安全)
+try:
+    import pyautogui as _pyautogui_global  # type: ignore
+    pyautogui = _pyautogui_global
+except Exception:  # pragma: no cover
+    pyautogui = None  # type: ignore[assignment]
+
+try:
+    import pyperclip as _pyperclip_global  # type: ignore
+    pyperclip = _pyperclip_global
+except Exception:  # pragma: no cover
+    pyperclip = None  # type: ignore[assignment]
+
 # ==========================================
 # 全局初始化（只初始化一次，性能最高）
 # ==========================================
@@ -816,64 +831,45 @@ def _run_on_gui_thread(fn) -> None:
 def execute_command(data):
     cmd = data.get("cmd")
 
-    if cmd == "NEXT_PAGE":
-        import pyautogui
+    # kasi.txt [3]:pyautogui 已在文件顶部 import,删除每个分支内重复 import。
+    if pyautogui is None:
+        return  # 依赖缺失,静默跳过
 
+    if cmd == "NEXT_PAGE":
         pyautogui.press("pagedown")
         request_ppt_notes_refresh()
     elif cmd == "PREV_PAGE":
-        import pyautogui
-
         pyautogui.press("pageup")
         request_ppt_notes_refresh()
     elif cmd == "FULL_SCREEN":
-        import pyautogui
-
         pyautogui.press("f5")
         request_ppt_notes_refresh()
     elif cmd == "FROM_CURRENT":
-        import pyautogui
-
         pyautogui.hotkey("shift", "f5")
         request_ppt_notes_refresh()
     elif cmd == "BLACK_SCREEN":
-        import pyautogui
-
         pyautogui.press("b")
     elif cmd == "WHITE_SCREEN":
-        import pyautogui
-
         pyautogui.press("w")
     elif cmd == "EXIT":
-        import pyautogui
-
         pyautogui.press("esc")
         request_ppt_notes_refresh()
     elif cmd == "SEND_TEXT":
-        import pyautogui
-        import pyperclip
-
         text = data.get("text", "")
-        if text:
+        if text and pyperclip is not None:
             pyperclip.copy(text)
             pyautogui.hotkey("ctrl", "v")
     elif cmd == "SELECT_ALL":
-        import pyautogui
-
         pyautogui.hotkey("ctrl", "a")
 
     elif cmd == "COPY":
-        import pyautogui
-
         pyautogui.hotkey("ctrl", "c")
     elif cmd == "PASTE":
-        import pyautogui
-
         pyautogui.hotkey("ctrl", "v")
     elif cmd == "SCREENSHOT":
-        import pyautogui
-
-        save_path = os.path.join(SAVE_DIR, f"screen_{int(time.time())}.png")
+        # error.txt [2]:time.time() 精度只到秒,同秒并发覆盖 + 卡线程
+        # 改 time.time_ns() 保证唯一文件名
+        save_path = os.path.join(SAVE_DIR, f"screen_{time.time_ns()}.png")
         abs_path = os.path.abspath(save_path)
         pyautogui.screenshot(abs_path)
         print(f"✅ 截图已保存：{abs_path}")
@@ -2768,14 +2764,24 @@ class PptDesktopApp:
         self._dispose_all_overlays()
         _ppt_app_instance = None
         self.stop_service()
-        time.sleep(0.3)
+        # kasi.txt [5]:之前 time.sleep(0.3) 在主线程,卡 Tk mainloop 300ms。
+        # 改 self.root.after(300, ...) 异步执行,主线程立即返回继续处理事件。
         if self._tray_icon is not None:
             try:
                 self._tray_icon.stop()
             except Exception:
                 pass
-        self.root.quit()
-        self.root.destroy()
+        self.root.after(300, self._finish_quit)
+
+    def _finish_quit(self):
+        try:
+            self.root.quit()
+        except Exception:
+            pass
+        try:
+            self.root.destroy()
+        except Exception:
+            pass
 
     def run(self):
         self.root.mainloop()

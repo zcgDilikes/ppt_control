@@ -13,7 +13,6 @@ observable without real hardware.
 from __future__ import annotations
 
 import threading
-from fractions import Fraction
 from typing import Optional, Tuple
 
 # ``pyautogui`` is used for screen-size probing.  It is monkeypatched in tests,
@@ -29,6 +28,27 @@ pyautogui = _pyautogui  # type: ignore[assignment]
 # ``pynput.mouse.Controller`` is used in production for real mouse ops.
 # It is intentionally NOT imported at module level so tests can avoid the
 # dependency; tests monkeypatch ``pynput.mouse.Controller`` instead.
+# kasi.txt [15]:Button enum 在 hot-path click() 中每次重新 import 会慢 100-500us,
+# 改模块级懒加载(首次使用 cache,后续直接读)。
+_PYNPUT_BUTTON = None  # type: ignore[var-annotated]
+_PYNPUT_BUTTON_LOCK = threading.Lock()
+
+
+def _get_pynput_button():
+    global _PYNPUT_BUTTON
+    if _PYNPUT_BUTTON is not None:
+        return _PYNPUT_BUTTON
+    with _PYNPUT_BUTTON_LOCK:
+        if _PYNPUT_BUTTON is not None:
+            return _PYNPUT_BUTTON
+        try:
+            from pynput.mouse import Button  # type: ignore
+            # cache to module-level singleton
+            globals()["_PYNPUT_BUTTON"] = Button
+        except Exception:
+            return None
+        return _PYNPUT_BUTTON
+
 
 LASER_SENS = 6
 
@@ -53,11 +73,15 @@ class MouseController:
     def apply_delta(self, dx, dy) -> None:
         """Move the cursor by ``(dx, dy) * LASER_SENS`` pixels synchronously.
 
-        Scaling uses ``Fraction`` so ``0.1 * 6`` yields an exact ``0.6``
-        rather than ``0.6000000000000001``.
+        kasi.txt [14]:之前用 ``Fraction(str(float(dx))) * LASER_SENS`` 算缩放,
+        60fps laser 时 Fraction 构造比纯 float 慢 100-1000 倍。改纯 float 算,
+        精度损失在 1e-6 像素级,对鼠标位置无可观察影响。
         """
-        fx = float(Fraction(str(float(dx))) * LASER_SENS)
-        fy = float(Fraction(str(float(dy))) * LASER_SENS)
+        try:
+            fx = float(dx) * LASER_SENS
+            fy = float(dy) * LASER_SENS
+        except (TypeError, ValueError):
+            return
         controller = self._ensure_controller()
         if controller is None:
             return
@@ -111,15 +135,14 @@ class MouseController:
         controller = self._ensure_controller()
         if controller is None:
             return
-        # Lazy import of the Button enum (so test environments without
-        # pynput don't break at module load time).
-        try:
-            from pynput.mouse import Button as _PynputButton  # type: ignore
-        except Exception:
+        # kasi.txt [15]:Button enum 之前在 click() 内部 import,每次 ~100-500us
+        # 改模块级懒加载(见顶部 _get_pynput_button),首次 click 加载,后续直接用。
+        Button = _get_pynput_button()
+        if Button is None:
             return
         for _ in range(n):
             try:
-                controller.click(_PynputButton.left)
+                controller.click(Button.left)
             except Exception:
                 pass
 

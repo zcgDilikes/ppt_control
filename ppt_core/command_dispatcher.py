@@ -16,6 +16,14 @@ from typing import Any, Callable, Optional
 from .ws_messages import is_laser_delta, is_mouse_click, parse
 
 
+# kasi.txt [1]:LASER/MOUSE_CLICK 是 hot path(60fps),必须走同步路径;
+# PPT_CMDS 调 COM 可能阻塞 100-200ms,放线程池。
+# 拆开后:
+#   - LASER/MOUSE_CLICK: 同步,无锁,无队列 → 激光不卡
+#   - 其他命令: 锁内选 cmd,线程池异步执行 → PPT 不阻塞 WS 接收
+_FAST_PATH_CMDS = {"LASER", "MOUSE_CLICK"}
+
+
 class CommandDispatcher:
     """Route parsed WS command dicts to mouse / PPT / callbacks.
 
@@ -62,22 +70,31 @@ class CommandDispatcher:
         self._on_restore = on_restore
         self._on_client_settings = on_client_settings
         self._lock = threading.Lock()
-        # error.txt [8]:execute 派到后台线程池,避免持锁调 COM 卡住激光
-        self._executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="dispatch")
+        # kasi.txt [1]:max_workers 从 2 提到 8,避免 COM 长任务占满 worker
+        # 导致 LASER 队列堆积(虽然现在 LASER 不进池了,其他命令并发上限也放宽)
+        self._executor = ThreadPoolExecutor(
+            max_workers=8, thread_name_prefix="dispatch"
+        )
 
     # ------------------------------------------------------------------ public
 
     def dispatch(self, d: dict) -> None:
         """Dispatch one parsed command dict to the appropriate handler.
 
-        error.txt [8]:锁只保护「读 dict + 选 cmd」,实际 execute 用
-        ThreadPoolExecutor 派出去(避免持锁调 COM 卡激光)。
+        kasi.txt [1]:拆 fast path。
+        - LASER / MOUSE_CLICK 走同步路径,无锁无队列,60fps 激光无延迟
+        - 其他命令锁内选 cmd,锁外 submit 到线程池,WS 接收不被 COM 阻塞
         """
-        with self._lock:
-            cmd = d.get("cmd")
-        # 锁外执行,避免持锁调 GetObject / 鼠标 / COM 卡住后续 dispatch
+        if not isinstance(d, dict):
+            return
+        cmd = d.get("cmd")
+        # Fast path: 鼠标类命令同步执行,无锁无队列
+        if cmd in _FAST_PATH_CMDS:
+            self._dispatch_mouse(d, cmd)
+            return
+        # 慢路径:线程池异步执行
         if cmd:
-            self._executor.submit(self._dispatch_locked, d)
+            self._executor.submit(self._dispatch_slow, d)
 
     def dispatch_many(self, raw_messages: list[str]) -> int:
         """Parse and dispatch a list of raw JSON strings.
@@ -94,12 +111,17 @@ class CommandDispatcher:
             n += 1
         return n
 
+    def shutdown(self, wait: bool = True) -> None:
+        """停掉线程池(测试 / 退出时用)"""
+        self._executor.shutdown(wait=wait)
+
     # ----------------------------------------------------------------- private
 
-    def _dispatch_locked(self, d: dict) -> None:
-        cmd = d.get("cmd")
+    def _dispatch_mouse(self, d: dict, cmd: str) -> None:
+        """同步执行 mouse 命令,无锁。
 
-        # LASER — delta vs absolute distinguished by presence of dx/dy.
+        kasi.txt [1]: hot path,被 60fps 激光调用,要最快。
+        """
         if is_laser_delta(d):
             try:
                 dx = float(d["dx"])
@@ -108,8 +130,8 @@ class CommandDispatcher:
             except Exception:
                 pass
             return
-
         if cmd == "LASER":
+            # 绝对定位(没有 dx/dy,但有 x/y)
             try:
                 x = float(d["x"])
                 y = float(d["y"])
@@ -117,7 +139,6 @@ class CommandDispatcher:
             except Exception:
                 pass
             return
-
         if is_mouse_click(d):
             count = d.get("count", 1)
             try:
@@ -126,6 +147,10 @@ class CommandDispatcher:
                 count = 1
             self._mouse.click(count)
             return
+
+    def _dispatch_slow(self, d: dict) -> None:
+        """线程池内执行的慢命令(COM / IO / callbacks)"""
+        cmd = d.get("cmd")
 
         if cmd in self.PPT_CMDS:
             self._ppt_executor.execute(d)

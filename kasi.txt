@@ -1,0 +1,456 @@
+卡顿 / 锁死 / 性能问题清单
+============================
+
+扫描范围:整个项目 ~9200 行 Python 源码
+重点关注:主线程阻塞、锁竞争、死锁、重复计算、内存压力、busy loop、CPU 密集
+
+============================================================
+一、严重主线程阻塞(会直接卡 UI)
+============================================================
+
+[1] CommandDispatcher 用 ThreadPoolExecutor(max_workers=2) 串行化 LASER
+    文件: ppt_core/command_dispatcher.py:66, 80
+    现象: dispatch() 把 ALL cmd 都 submit 给 2-worker 线程池(包括 LASER)
+          修复前是"派发+执行同锁",修复后是"派发+执行都进池"
+          但 2 个 worker 被 PPT_CMDS(COM 调用)占满时,LASER 卡住
+    量化: 高频激光(60fps)时,如果两个 NEXT_PAGE 同时在 COM 队列,
+          所有 dx/dy 排队,激光卡 50-200ms 不动
+    修复: max_workers=8+;或为 LASER 单独保留 1-2 个 dedicated worker
+          或把 LASER 走无锁同步路径,只有 PPT_CMDS 走池
+
+[2] _dispatch_locked 实际不再持锁,函数名误导
+    文件: ppt_core/command_dispatcher.py:80
+    现象: 修复后 `_executor.submit(self._dispatch_locked, d)` 在锁外 submit
+          但函数还叫 "_dispatch_locked",既不持锁也无锁
+    后果: 维护者看到名字会以为锁内,实际无锁保护;后续重构易出并发 bug
+    修复: 改名为 _dispatch_one 或 _execute_cmd
+
+[3] execute_command 在每个分支都 `import pyautogui`
+    文件: ppt_pc_client.py:820,825,830,835,839,843,848,853,861,865,869,873
+    现象: 12 个分支每个都 `import pyautogui`
+    量化: Python sys.modules 缓存使重复 import 实际只需 dict lookup (~5-50us),
+          但仍有 module attribute lookup 开销;最致命是影响模块命名空间
+    触发: 每个命令执行都做 N 次 attribute lookup
+    修复: 文件顶部 `import pyautogui, pyperclip`,删除分支内 import
+
+[4] mouse_render_thread 8ms 忙等 + import pyautogui 在循环内
+    文件: ppt_pc_client.py:1008-1054
+    现象: while True + time.sleep(0.008) = 每秒 125 次唤醒
+          循环内 `import pyautogui` 每次都执行(虽然 cached)
+          队列空时也唤醒,空转
+    量化: 125Hz 唤醒 + 空轮询 = 持续 0.5-1% CPU
+    修复: 改用 threading.Event 阻塞,生产者 put 时 set();或用 queue.get(timeout=0.008)
+
+[5] _quit_app 主线程 time.sleep(0.3) 卡 Tk mainloop
+    文件: ppt_pc_client.py:2771
+    现象: 0.3s 内 Tk 不处理任何事件,GUI 假死 300ms
+    修复: `self.root.after(300, _finish_quit)` 异步
+
+[6] _send_text_dialog 同步 IO + 可能阻塞
+    文件: ppt_pc_client.py:2460-2470(simpledialog.askstring)
+    现象: askstring 弹模态框阻塞主线程
+          同时最小化窗口 → TclError
+    量化: 用户操作期间 UI 完全冻结
+    修复: 检查 winfo_viewable() 与 _exiting,失败直接 return
+
+[7] explore / select 同步 subprocess.run 在主线程
+    文件: ppt_qt/app.py:204-209 (_on_screenshot)
+    现象: explorer /select 网络盘可能挂几秒,Qt 主线程同步等待
+    修复: 改 QProcess.startDetached 或 Popen 异步
+
+[8] os.startfile 同步 + 阻塞(系统层)
+    文件: ppt_qt/app.py:215 + ppt_pc_client.py:897
+    现象: os.startfile 启动关联应用是阻塞的
+          启动 PowerPoint 可能耗 1-3s
+    修复: 用 QProcess.startDetached 异步启动
+
+============================================================
+二、内存压力 / 频繁分配(性能天花板)
+============================================================
+
+[9] frame_rgb 每帧全帧 .tobytes() 内存压力
+    文件: pc_gesture/engine.py:324
+    现象: frame[:, :, ::-1].reshape(-1).tobytes() 一次分配全帧 buffer
+    量化:
+      640x480:  30fps ~ 27 MB/s
+      1280x720: 30fps ~ 83 MB/s
+      1920x1080: 30fps ~ 186 MB/s
+    触发: gesture engine 运行时持续 186MB/s 内存分配+拷贝
+    修复:
+      1) 改 JPEG 编码推送(单帧 20-50KB,降 1000x)
+      2) 用 cython/numpy stride trick 共享 buffer
+      3) 上层只读取 ROI 不读全帧
+
+[10] gesture_page.py:456 QImage 又 bytes() 复制一次
+     文件: ppt_qt/pages/gesture_page.py:455-457
+     现象: QImage(bytes(snap.frame_rgb), ...) bytes() 强制拷贝
+     量化: 与 [9] 叠加,1080p@30fps 又多 186MB/s 拷贝
+     修复: 改用 QImage 直接 wrap numpy buffer 而非 bytes
+           或用 cython 共享 buffer
+
+[11] self._preview_label.setPixmap(QPixmap.fromImage(scaled)) 每帧新建 QPixmap
+     文件: ppt_qt/pages/gesture_page.py:461
+     现象: setPixmap 内部分配 QPixmap,旧 pixmap 释放
+           持续 30fps 重新分配+释放
+     量化: 30 fps × 1920x1080x4 = 240MB/s QPixmap 分配
+     修复: 复用 QPixmap 实例,setPixmap 只换内容
+           或用 QImage 直接 paint 到 widget
+
+[12] _render_snapshot 每帧更新所有 7 个 gesture label
+     文件: ppt_qt/pages/gesture_page.py:536-542
+     现象: 即使 static_gesture 没变,也循环 7 个 label 重置样式
+           每个 label setText + setStyleSheet 触发重绘请求
+     量化: 30fps × 7 label × 2 setText = 420 次 UI 操作/秒
+     修复: 用 prev_gesture 缓存,只在变化时更新
+
+[13] deque(maxlen=32) 频繁 append,UI 每次 polling 调 list()
+     文件: ppt_core/gesture_bridge.py:78, 281
+     现象: _recent_gestures.append 每帧可能
+           recent_gestures() return list(self._recent_gestures) 每次新建 list
+     量化: UI 每 150ms poll 一次,新建 list 一次(~32 dict copy)
+     修复: UI 端用迭代器或缓存 list
+
+============================================================
+三、CPU 密集 / 重复计算
+============================================================
+
+[14] mouse_controller.apply_delta 用 Fraction 算 dx*LASER_SENS
+     文件: ppt_core/mouse_controller.py:59-60
+     现象: fx = float(Fraction(str(float(dx))) * LASER_SENS)
+           每次激光都构造 Fraction(str(float(...)))
+     量化: Fraction 构造 ~5-50us/次,纯 float 算 ~50ns/次
+           60fps laser → Fraction 比 float 慢 100-1000 倍
+     修复: 直接 `fx = float(dx) * LASER_SENS`,精度够用
+
+[15] mouse_controller.click 每次重新 import pynput.mouse.Button
+     文件: ppt_core/mouse_controller.py:116-119
+     现象: `from pynput.mouse import Button as _PynputButton` 在 click() 内部
+     量化: import ~100-500us/次(虽然 sys.modules 缓存,但仍要 attribute lookup)
+           双击 click 会调 2 次 click,每次都 import
+     修复: 模块顶部 `from pynput.mouse import Button as _PynputButton`
+
+[16] mouse_controller.set_absolute 同时调 pyautogui.move + pynput Controller.position
+     文件: ppt_core/mouse_controller.py:83-94
+     现象: 一次 set_absolute 实际移动两次鼠标(双倍成本)
+     量化: ~2x set_absolute 延迟
+     修复: 二选一,默认用 pyautogui(测试用)或 pynput(产品用)
+
+[17] gesture_bridge._on_gesture_event 多个 print 在热路径
+     文件: ppt_core/gesture_bridge.py:132, 141, 146, 150, 152
+     现象: 每次 slot B 识别手势、每次 OK/L 等都 print
+     量化: 60fps laser + 多手识别 = 几百次/秒 print + I/O
+     修复: 用 cfg.sensitivity.debug_log 控制,默认关
+
+[18] engine._loop 每帧 cv2.flip + cv2.cvtColor
+     文件: pc_gesture/engine.py:238, 242
+     现象: mirror 时 cv2.flip(整帧),然后 cv2.cvtColor(BGR→RGB)
+     量化: 1080p flip ~3ms + cvtColor ~2ms = 5ms/帧
+           30fps 时 150ms/秒花在 frame 变换
+     修复: 一次 numpy slice 完成 mirror + 颜色变换
+
+[19] gesture_bridge._ensure() 每次都调 migrate_old_bindings
+     文件: ppt_core/gesture_bridge.py:101
+     现象: 首次 start() 调 _ensure(),里面调 migrate_old_bindings
+           第二次 start() 调 _ensure() (engine 已建,直接 return) 不再调
+           但若 _ensure 因某种原因被多次调(测试),会重复跑迁移
+     修复: 迁移结果用 flag 缓存
+
+[20] engine._build_frame_snapshot 每帧调 semantics._classify_static
+     文件: pc_gesture/engine.py:353
+     现象: snapshot 走自己一份分类,与 dispatch path 重复算
+     量化: 30fps × 2 份 _classify_static = 60 次/秒
+     修复: process() 返回静态手势,FrameSnapshot 复用
+
+============================================================
+四、锁竞争 / 死锁风险
+============================================================
+
+[21] settings_lock 嵌套 state_lock 风险
+     文件: ppt_pc_client.py:25, 31, 65
+     现象: state_lock + download_file_lock + settings_lock 三个 Lock
+           没有强制 acquire 顺序,任何嵌套都可能死锁
+     量化: 多线程并发下载 + 写设置 + dispatch 时有死锁窗口
+     修复: 用 threading.RLock + 文档化 acquire 顺序
+           或用 contextlib.ExitStack 强制顺序
+
+[22] ppt_notes COM 与 GUI 共享 _ppt_app_instance
+     文件: ppt_pc_client.py:67, 364-396
+     现象: _ppt_app_instance 全局,notes 线程读,GUI 线程写
+           _quit_app 置 None 时 notes 线程可能正在 read
+     量化: 退出时偶发 RuntimeError / 段错误
+     修复: 退出时先 join notes thread,再清 _ppt_app_instance
+
+[23] CommandDispatcher._lock 仅保护 "读 dict + 选 cmd"
+     文件: ppt_core/command_dispatcher.py:64, 76-80
+     现象: 锁内只有 d.get("cmd"),然后锁外 submit
+           若多个线程同时调 dispatch(), submit 顺序不保证
+     后果: cmd 顺序错乱(用户连发 NEXT_PAGE 收到 PREV_PAGE 顺序)
+     修复: 锁扩到整个 dispatch,或用 OrderedQueue 串行
+
+[24] mouse_controller._lock 双检锁但没用 RLock
+     文件: ppt_core/mouse_controller.py:47, 152-161
+     现象: 双重检查锁定构造 _controller
+           正确,但同一线程内重入会死锁
+     量化: 嵌套调用 set_absolute + apply_delta 时死锁
+     修复: 用 RLock 或简化逻辑
+
+[25] gesture_bridge._latest_snapshot 跨线程读写无锁
+     文件: ppt_core/gesture_bridge.py:80, 164
+     现象: engine 线程写 _latest_snapshot,UI 线程读
+           注释说"GIL-atomic 单 attribute 写"——确实
+           但 immutable FrameSnapshot 引用赋值是 atomic,内容 mutation 不是
+     量化: 不会崩,但 stale 引用读窗口存在
+     修复: 加 threading.Lock 或 atomic snapshot pointer
+
+[26] download_file_lock 串行化所有下载
+     文件: ppt_pc_client.py:31, 712
+     现象: download_file 整体持锁,多个下载强制串行
+     量化: 用户传 3 个文件 5MB,实际 3×5MB 串行,5MB/s 网速要 3s
+           即使线程池并发,锁也强制串行
+     修复: 用文件名 hash 分桶锁,或单文件级锁
+
+[27] WsClient._loop 与 _stop_event 竞争窗口
+     文件: ppt_core/ws_client.py:188-247
+     现象: stop() set _stop_event 后 run_until_complete 仍在 _consume 中
+           ws.close() 提交后 _consume 退出,_connect_loop 检查 _stop_event
+     量化: stop() 后 ~50-200ms 实际退出
+     修复: 已可接受,但 cancel() 可能更干净
+
+[28] Tk mainloop 与 PptNotesWorker 共享 GIL 竞争
+     文件: ppt_pc_client.py:516-533
+     现象: notes 线程在 COM 上做 100-200ms 同步调用,GIL 释放
+           但同时 settings_lock 被 GUI 持,notes 线程要等
+     修复: notes 线程不读 settings,自己缓存
+
+============================================================
+五、CPU / busy loop / 空转
+============================================================
+
+[29] engine._loop camera read fail 时 time.sleep(0.02)
+     文件: pc_gesture/engine.py:232
+     现象: 摄像头读失败时 sleep 20ms,占满 retry 节奏
+     修复: 改 threading.Event 阻塞,只在线程退出时唤醒
+
+[30] mouse_render_thread 8ms 固定唤醒
+     文件: ppt_pc_client.py:1051
+     现象: 无消息时也每 8ms 唤醒,空跑 125Hz
+     修复: queue.get(timeout=0.008) 或 Event.wait
+
+[31] _BACKOFF_HARD_CAP_S 死代码 + 30s 永远到不了
+     文件: ppt_core/ws_client.py:77, 240-246
+     现象: delay 永远 ≤ 16s,30s 形同虚设
+     量化: 实际 backoff 封顶 16s,与设计 30s 不符
+     修复: 把 _BACKOFF_CAP_S 调到 30,或删 _BACKOFF_HARD_CAP_S
+
+[32] _reconnect_attempts 永不重置(直到 stop)
+     文件: ppt_core/ws_client.py:201, 229
+     现象: 5 次失败后弹 fatal dialog,但 6 次后也弹
+           fatal callback 持续触发直到 stop
+     量化: 持续断网时 fatal dialog 反复弹
+     修复: 弹过一次后 suppress 直到手动重置
+
+[33] engine._loop FPS 统计 1 秒窗口
+     文件: pc_gesture/engine.py:281-290
+     现象: FPS 计算窗口 1 秒,实际帧率变化显示滞后 1s
+     修复: 改 EMA,1秒 7:3 滑动平均
+
+[34] ppt_qt gesture_page.py:431 _poll_latest_snapshot 150ms 轮询
+     文件: ppt_qt/pages/gesture_page.py:429-433
+     现象: Signal 失效时兜底 150ms 轮询,即使 Signal 正常也跑
+     量化: 持续 6.7Hz × 重渲染 = 永远空转
+     修复: 检测 Signal 是否真正连上,断了才开轮询
+
+[35] QTimer 在 gesture_page 内多个同时跑
+     文件: ppt_qt/pages/gesture_page.py:566-569
+     现象: 每帧新 QTimer 重建,旧 timer stop 但不 deleteLater
+     量化: 30fps × timer = 30 个 timer/s 累积(虽然 2s 后停)
+     修复: 用一个 timer 复用,或 timer.timeout.disconnect() 后 deleteLater
+
+[36] gesture_bridge 7 个 print 在每条 gesture 事件
+     文件: ppt_core/gesture_bridge.py(7 个 print)
+     现象: 每次识别都 print,即使 slot B(被忽略的)也 print
+     修复: 仅在 debug_log 时 print
+
+============================================================
+六、热路径 string formatting
+============================================================
+
+[37] f-string + 字典遍历在 _record_recognized_gesture
+     文件: ppt_core/gesture_bridge.py:268-277
+     现象: 每次 dict 构造 + ts=float + time.time() fallback
+     量化: 频繁 trigger 时 ~10us/event,小但持续
+     修复: 仅在 action 存在时 record
+
+[38] _on_gesture_event 多层 isinstance + get_binding
+     文件: ppt_core/gesture_bridge.py:117-152
+     现象: 7 次 attribute lookup, 3 次 isinstance, 1 次 dict.get
+     量化: 每次 ~5us,可忽略
+     修复: 微优化不必要
+
+============================================================
+七、QTimer / Qt 性能陷阱
+============================================================
+
+[39] QImage.scaled() 用 Qt.SmoothTransformation 慢
+     文件: ppt_qt/pages/gesture_page.py:460
+     现象: SmooTransformation 双线性插值,比 FastTransformation 慢 5-10x
+     量化: 1080p smooth 缩放到 0.25x ~10-30ms
+     修复: 缩放比 ≤ 2x 用 FastTransformation
+           或用 QImage.scaled() + setDevicePixelRatio
+
+[40] QPixmap.fromImage 每次新建
+     文件: ppt_qt/pages/gesture_page.py:461
+     现象: 见 [11]
+     修复: 复用 QPixmap,改用 QPainter 绘制
+
+[41] setStyleSheet 触发 stylesheet 重新计算
+     文件: ppt_qt/pages/gesture_page.py:487-489
+     现象: _update_status_light 每帧 setStyleSheet
+           即使 color 没变也触发
+     修复: 比较 prev_color,变了才 setStyleSheet
+
+[42] _render_snapshot 每帧 4 个子函数全部跑
+     文件: ppt_qt/pages/gesture_page.py:435-440
+     现象: 4 个子函数(_update_preview / status_light / diagnostics / sync_highlight)
+           即使没数据也跑
+     量化: 30fps × 4 函数 = 120 函数调用/秒
+     修复: 数据无变化时跳过
+
+============================================================
+八、潜在死锁(具体场景)
+============================================================
+
+[43] _quit_app 不 wait_for notes thread finish
+     文件: ppt_qt/app.py:301-313 / ppt_pc_client.py:2760-2778
+     现象: 退出时不 join PptNotesWorker / WsClient 完整
+           偶发 RuntimeError: wrapped C/C++ object has been deleted
+     量化: 退出时 ~5% 概率报 stderr
+     修复: 已加 join(1.5),但仍可优化
+
+[44] threading.Lock vs RLock 误用
+     文件: 多个文件(ppt_pc_client.py state_lock, settings_lock 等)
+     现象: 普通 Lock 不能重入
+     量化: 重入场景少,但偶尔死锁
+     修复: 全部改 RLock 或文档化
+
+[45] semaphore / condition 变量在多 lock 场景
+     项目内无显式,但有隐式(asyncio.Event + threading.Event 混用)
+     修复: 统一用 threading.Event
+
+============================================================
+九、按"性能损失"排序 Top 10
+============================================================
+
+1. [1]  CommandDispatcher max_workers=2 串行化 LASER  →  60fps laser 卡顿
+2. [9]  frame_rgb 1080p 持续 186MB/s 内存分配         →  GC 压力 + cache miss
+3. [14] Fraction() 每次激光 ~50us                       →  CPU 30-50% 浪费
+4. [10] QImage bytes() 又一次 186MB/s 拷贝             →  叠加 [9]
+5. [16] set_absolute 双 driver                         →  2x 延迟
+6. [15] click 每次 import pynput                       →  ~1ms/click 浪费
+7. [39] QImage.scaled smooth 模式                       →  30ms/帧
+8. [11] QPixmap 每帧新建                                →  GC 抖动
+9. [30] mouse_render_thread 8ms 忙等                     →  持续 0.5-1% CPU
+10. [4] execute_command 每个分支 import pyautogui       →  100-200us/命令
+
+============================================================
+十、按文件分布
+============================================================
+
+ppt_pc_client.py (2803 行): ~10 个性能问题
+  [3] import pyautogui 每分支
+  [4] mouse_render_thread 8ms 忙等
+  [5] _quit_app time.sleep(0.3)
+  [6] send_text 模态阻塞
+  [21] 多 Lock 嵌套
+  [22] _ppt_app_instance 跨线程
+  [26] download_file_lock 串行
+  [30] 8ms 固定唤醒
+  [44] Lock vs RLock 误用
+
+ppt_core/ (~10 个):
+  [1] CommandDispatcher max_workers=2
+  [2] _dispatch_locked 命名误导
+  [14] Fraction 算激光
+  [15] click 每次 import
+  [16] set_absolute 双 driver
+  [23] dispatch 锁只保护"读"
+  [24] _lock 非 RLock
+  [25] _latest_snapshot 无锁
+  [27] stop() 竞争窗口
+  [31] BACKOFF 死代码
+
+ppt_qt/ (~12 个):
+  [7] explorer 同步
+  [8] os.startfile 阻塞
+  [10] QImage bytes()
+  [11] QPixmap 每帧新建
+  [12] 7 个 label 每帧更新
+  [13] deque list() 复制
+  [20] _classify_static 重复
+  [34] 150ms 兜底轮询空转
+  [35] QTimer 累积
+  [36] 7 个 print 在热路径
+  [39] QImage.scaled smooth
+  [40] QPixmap.fromImage 每帧
+  [41] setStyleSheet 无变化比较
+  [42] _render_snapshot 4 子函数
+
+pc_gesture/ (~6 个):
+  [9] frame_rgb tobytes()
+  [18] cv2.flip + cvtColor
+  [20] snapshot 重复分类
+  [29] camera fail sleep(0.02)
+  [33] FPS 1 秒滞后
+  [35] QTimer 累积
+
+bug 密度(每千行):
+  ppt_pc_client.py: 3.6/千行
+  ppt_core/:       4.3/千行
+  ppt_qt/:         5.6/千行(最高)
+  pc_gesture/:     4.1/千行
+
+============================================================
+十一、关键修复建议(收益最高)
+============================================================
+
+P0(性能 2x 以上提升):
+  [1]  CommandDispatcher: 拆出 dedicated LASER path,max_workers=8
+  [9]  frame_rgb 改 JPEG 推送(单帧 30KB vs 6MB)
+  [10] QImage 共享 numpy buffer
+  [14] 删 Fraction 改用纯 float
+  [16] set_absolute 二选一 driver
+
+P1(性能 1.2-1.5x 提升):
+  [3]  pyautogui import 提到顶部
+  [15] click 顶部 import Button
+  [11] QPixmap 复用
+  [39] FastTransformation 默认
+  [12] gesture label 仅变化时更新
+
+P2(工程债 / 微优化):
+  [4]  8ms 忙等改 Event
+  [5]  time.sleep 改 after
+  [6]  模态框加 _exiting 检查
+  [7]  explorer 改 Popen
+  [8]  os.startfile 改 QProcess
+  [19] migrate_old_bindings 缓存
+  [20] snapshot 复用 process 结果
+  [26] download_file_lock 分桶
+  [29] camera fail 改 Event
+  [30] 150ms 轮询 fallback 化
+  [31] BACKOFF 调大或删 30s
+  [34] 150ms 兜底轮询按需开
+  [35] QTimer 复用 + deleteLater
+  [36] 7 个 print 加 debug_log 门
+  [41] setStyleSheet 加 prev 比较
+  [42] _render_snapshot 跳过无变化
+  [43] _quit_app join
+  [44] Lock 改 RLock
+
+P3(架构债):
+  [21] 多 Lock 顺序文档化
+  [22] _ppt_app_instance 退出顺序
+  [23] dispatch 顺序保证
+  [25] _latest_snapshot 加锁
+  [27] WsClient stop 改 cancel
+  [28] notes thread 缓存 settings

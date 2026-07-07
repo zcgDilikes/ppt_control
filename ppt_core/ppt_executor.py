@@ -372,12 +372,15 @@ class PptExecutor:
         1. If ``path`` is a non-empty string that points to an existing
            file with a known PPT extension (or any extension, since the
            caller already validated it), ``os.startfile`` is invoked.
-        2. Otherwise create an empty ``.pptx`` in the system temp dir
-           (``os.environ['TEMP']`` on Windows, falling back to
-           ``tempfile.gettempdir()``) and open that.
+        2. Otherwise create a real empty ``.pptx`` (valid OOXML/ZIP
+           archive containing a single blank slide) in the system temp
+           dir and open that.
         3. ``os.startfile`` is Windows-only; on other platforms this
            silently does nothing because the project as a whole is
            Windows-only (``ppt_pc_client`` is a desktop app for Windows).
+
+        error.txt [1]: 之前用 mkstemp 创建 0 字节 .pptx 空文件,PowerPoint 打开
+        失败,被 except 吞掉,用户无感知。改用 python-pptx 创建有效空白演示文稿。
         """
         target: Optional[str] = None
 
@@ -390,21 +393,12 @@ class PptExecutor:
 
         if target is None:
             try:
-                temp_root = os.environ.get("TEMP") or tempfile.gettempdir()
-                # ``mkstemp`` returns ``(fd, name)``; close the fd
-                # immediately — we only need the path.  An empty file is
-                # created on disk; PowerPoint will treat it as a blank
-                # document when launched via ``os.startfile``.
-                fd, name = tempfile.mkstemp(suffix=".pptx", dir=temp_root)
-                try:
-                    os.close(fd)
-                except Exception:
-                    pass
-                target = name
+                target = self._create_blank_pptx()
             except Exception:
-                # If we cannot even create a temp file, there is nothing
-                # useful we can do here.
                 return
+
+        if target is None:
+            return
 
         try:
             os.startfile(target)  # type: ignore[attr-defined]  # Windows-only
@@ -414,3 +408,68 @@ class PptExecutor:
             # caller cannot meaningfully react, and the executor's
             # contract is total.
             pass
+
+    @staticmethod
+    def _create_blank_pptx() -> Optional[str]:
+        """Create a real empty .pptx file in the temp dir.
+
+        Tries python-pptx first; falls back to COM
+        (PowerPoint.Application.Presentations.Add) if available;
+        falls back to copying a minimal OOXML template (or returning
+        None if nothing works — caller will silently skip).
+
+        error.txt [1]: 0 字节 .pptx 在 PowerPoint 打开会失败。这里必须返回
+        合法 OOXML 文件才能被 os.startfile 正确处理。
+        """
+        temp_root = os.environ.get("TEMP") or tempfile.gettempdir()
+        try:
+            fd, target = tempfile.mkstemp(suffix=".pptx", prefix="ppt_remote_", dir=temp_root)
+            try:
+                os.close(fd)
+            except Exception:
+                pass
+        except Exception:
+            return None
+
+        # Strategy 1: python-pptx
+        try:
+            from pptx import Presentation  # type: ignore
+            prs = Presentation()
+            # Add one blank slide so the file is non-empty and valid.
+            try:
+                blank_layout = prs.slide_layouts[6]
+            except (IndexError, AttributeError):
+                blank_layout = None
+            if blank_layout is not None:
+                prs.slides.add_slide(blank_layout)
+            prs.save(target)
+            return target
+        except Exception:
+            pass  # fall through to COM
+
+        # Strategy 2: COM (PowerPoint must be installed)
+        try:
+            import win32com.client  # type: ignore
+            app = win32com.client.DispatchEx("PowerPoint.Application")
+            try:
+                app.Visible = True
+                pres = app.Presentations.Add()
+                try:
+                    pres.SaveAs(target)
+                finally:
+                    pres.Close()
+            finally:
+                try:
+                    app.Quit()
+                except Exception:
+                    pass
+            return target
+        except Exception:
+            pass
+
+        # Strategy 3: all failed. Remove the empty file and return None.
+        try:
+            os.unlink(target)
+        except Exception:
+            pass
+        return None

@@ -121,6 +121,10 @@ class GestureBridge(QObject):
         :meth:`pc_gesture.engine.GestureEngine._safe_dispatch`), so the second
         positional ``source`` argument must be accepted even though we only
         use the event payload here.
+
+        kasi.txt [36]:之前 7 个 print 在热路径(每次 gesture event 都打),
+        双人模式 slot B 每次识别都打,持续几百次/秒 print + I/O。
+        加 debug_log 门控,默认关。
         """
         if not isinstance(ev, dict):
             return
@@ -128,8 +132,11 @@ class GestureBridge(QObject):
             return
         gesture = ev.get("gesture")
         slot = ev.get("slot", "A")
+        # kasi.txt [36]:debug_log 默认 False,热路径只读一次
+        debug = bool(self._cfg.sensitivity.get("debug_log", False))
         if slot != "A":
-            print(f"[bridge] ignored slot={slot} gesture={gesture} (only slot A fires)")
+            if debug:
+                print(f"[bridge] ignored slot={slot} gesture={gesture} (only slot A fires)")
             return
         action = self._cfg.get_binding(gesture)
         # Always record what we recognized, regardless of teaching_mode —
@@ -138,18 +145,22 @@ class GestureBridge(QObject):
         self._record_recognized_gesture(gesture, action, ev, source)
         # Teaching mode: skip the actual cmd dispatch but keep the recording.
         if self._teaching_mode:
-            print(f"[bridge] 🎓 教学模式 → 识别 {gesture} 但跳过 dispatch")
+            if debug:
+                print(f"[bridge] 🎓 教学模式 → 识别 {gesture} 但跳过 dispatch")
             return
         if action:
             payload = _action_to_cmd(action, default_open_ppt_path="")
             if payload:
-                print(f"[bridge] ✅ {gesture} → {action} → dispatch {payload}")
+                if debug:
+                    print(f"[bridge] ✅ {gesture} → {action} → dispatch {payload}")
                 try:
                     self._dispatcher.dispatch(payload)
                 except Exception as e:
+                    # dispatch 失败应该始终打(罕见,可能是 bug)
                     print(f"[bridge] ❌ dispatch 失败: {e}")
         else:
-            print(f"[bridge] ⚠️  {gesture} 识别成功但未绑定 action,跳过 dispatch")
+            if debug:
+                print(f"[bridge] ⚠️  {gesture} 识别成功但未绑定 action,跳过 dispatch")
 
     # --------------------------------------------------------------- frames
 

@@ -318,10 +318,18 @@ class GestureEngine:
         finger_states are derived from the same heuristics used by
         ``self._semantics._classify_static`` so diagnostics stay in sync with
         what the recognizer actually sees.
+
+        kasi.txt [9]:1080p@30fps 时 frame_rgb 持续 186MB/s 内存分配 + 拷贝。
+        没有 on_frame 消费者时,frame_rgb 设 None,只算 hand landmarks(几 KB)。
         """
         h, w = frame.shape[:2]
-        # frame_rgb = RGB888 bytes (Qt QImage 用 RGB888, 不是 BGR)
-        rgb = frame[:, :, ::-1].reshape(-1).tobytes() if frame is not None else None
+        # kasi.txt [9]:仅在有消费者时分配 frame_rgb;否则 frame_rgb=None 节省
+        # 1080p@30fps ~186MB/s 内存带宽。无消费者(只用手势事件)零开销。
+        if self._on_frame is not None and frame is not None:
+            # frame_rgb = RGB888 bytes (Qt QImage 用 RGB888, 不是 BGR)
+            rgb = frame[:, :, ::-1].reshape(-1).tobytes()
+        else:
+            rgb = None
 
         # 配对与槽位映射(沿用 semantics 的规则)
         is_single = self.cfg.operator_mode == "single"
