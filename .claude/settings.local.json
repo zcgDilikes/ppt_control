@@ -214,7 +214,10 @@
       "Bash(ls ppt_qt/pages/ ppt_qt/widgets/ ppt_qt/overlays/)",
       "Bash(ls docs/)",
       "Bash(mkdir -p docs/superpowers/specs/)",
-      "Bash(grep -nE \"TBD|TODO|XXX|FIXME|\\\\\\\\?\\\\\\\\?\\\\\\\\?|<placeholder>\" docs/superpowers/specs/2026-07-07-gesture-9events-design.md)"
+      "Bash(grep -nE \"TBD|TODO|XXX|FIXME|\\\\\\\\?\\\\\\\\?\\\\\\\\?|<placeholder>\" docs/superpowers/specs/2026-07-07-gesture-9events-design.md)",
+      "Bash(mkdir -p .superpowers/sdd)",
+      "Bash(bash C:/Users/admin_gmail/.claude/plugins/cache/claude-plugins-official/superpowers/6.1.1/skills/subagent-driven-development/scripts/task-brief docs/superpowers/plans/2026-07-07-gesture-9events.md 1)",
+      "Bash(bash C:/Users/admin_gmail/.claude/plugins/cache/claude-plugins-official/superpowers/6.1.1/skills/subagent-driven-development/scripts/task-brief docs/superpowers/plans/2026-07-07-gesture-9events.md 2)"
     ]
   }
 }

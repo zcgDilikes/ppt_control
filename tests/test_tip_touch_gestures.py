@@ -67,3 +67,13 @@ def test_set_tip_binding_rejects_unknown_action():
     except ValueError:
         return
     raise AssertionError("should have raised ValueError")
+
+
+def test_handstate_has_new_tip_fields():
+    """9 事件需要新的 last_gesture 和 cooldown 字段"""
+    from pc_gesture.semantics import HandState
+    st = HandState(slot="A")
+    assert st.last_tip_gesture == "NONE"
+    assert st.tip_cooldown_until == 0.0
+    assert st.last_interlock_gesture == "NONE"
+    assert st.interlock_cooldown_until == 0.0

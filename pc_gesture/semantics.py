@@ -71,6 +71,11 @@ class HandState:
     last_static_gesture: str = "NONE"                # OK / L_SIGN / THREE_FINGERS / POINTING_UP / SCISSORS / FIST / PALM / NONE
     last_static_at: float = 0.0                      # 上一次识别到非 NONE 手势的 wall-clock,用于 auto-reset
     static_cooldown_until: float = 0.0
+    # 9-event 字段(9-events design spec 2026-07-07)
+    last_tip_gesture: str = "NONE"                   # L/R_HAND_INDEX|MIDDLE|RING|PINKY|NONE
+    tip_cooldown_until: float = 0.0                  # 9 事件独立冷却
+    last_interlock_gesture: str = "NONE"             # slot A 上的 interlock 状态(单一)
+    interlock_cooldown_until: float = 0.0            # interlock 独立冷却
     # 捏合迟滞
     pinching: bool = False
     # 激光上一帧坐标(用于 EMA)
