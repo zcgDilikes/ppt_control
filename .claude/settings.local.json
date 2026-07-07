@@ -211,7 +211,10 @@
       "Bash(git checkout *)",
       "Bash(git gc *)",
       "Bash(ls -la ppt_pc_client.py ppt_qt.py)",
-      "Bash(ls ppt_qt/pages/ ppt_qt/widgets/ ppt_qt/overlays/)"
+      "Bash(ls ppt_qt/pages/ ppt_qt/widgets/ ppt_qt/overlays/)",
+      "Bash(ls docs/)",
+      "Bash(mkdir -p docs/superpowers/specs/)",
+      "Bash(grep -nE \"TBD|TODO|XXX|FIXME|\\\\\\\\?\\\\\\\\?\\\\\\\\?|<placeholder>\" docs/superpowers/specs/2026-07-07-gesture-9events-design.md)"
     ]
   }
 }
