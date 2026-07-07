@@ -334,6 +334,39 @@ class GestureSemantics:
 
         return self.G_NONE
 
+    def _detect_tip_touches(self, lm, slot: str) -> str:
+        """9-events design spec 2026-07-07: 单手指尖触碰检测。
+
+        拇指尖到 4 个指尖的归一化距离,选最近;距离 < tip_touch_ratio 触发。
+        返回 8 个 L/R_HAND_* 事件之一或 "NONE"。
+        """
+        if not lm or len(lm) < 21:
+            return "NONE"
+        try:
+            size = self._hand_size(lm)
+            threshold = float(self.cfg.sensitivity.get("tip_touch_ratio", 0.55))
+        except (TypeError, ValueError):
+            return "NONE"
+        thumb_tip = lm[THUMB_TIP]
+        prefix = "L_HAND" if slot == "A" else "R_HAND"
+        candidates = [
+            (f"{prefix}_INDEX",  lm[INDEX_TIP]),
+            (f"{prefix}_MIDDLE", lm[MIDDLE_TIP]),
+            (f"{prefix}_RING",   lm[RING_TIP]),
+            (f"{prefix}_PINKY",  lm[PINKY_TIP]),
+        ]
+        try:
+            dists = [
+                (name, _dist(thumb_tip.x, thumb_tip.y, tip.x, tip.y) / size)
+                for name, tip in candidates
+            ]
+        except (TypeError, AttributeError):
+            return "NONE"
+        name, d = min(dists, key=lambda x: x[1])
+        if d < threshold:
+            return name
+        return "NONE"
+
     def _is_pinching(self, lm, pinch_th: float, pinch_rel: float) -> bool:
         """拇指尖与食指尖的距离 / 手掌参考长度。"""
         size = self._hand_size(lm)
