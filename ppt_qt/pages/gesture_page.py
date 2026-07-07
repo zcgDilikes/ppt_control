@@ -433,7 +433,16 @@ class GesturePage(QWidget):
             self._render_snapshot(snap)
 
     def _render_snapshot(self, snap):
-        """统一的帧渲染入口:Signal 和轮询都走这里。"""
+        """统一的帧渲染入口:Signal 和轮询都走这里。
+
+        kasi.txt [42]:之前 4 个子函数每帧都跑(30fps × 4 = 120 调用/秒)。
+        改为只在上次 timestamp_ms 不同时才跑;空帧(snap is None)只跑 diagnostics。
+        """
+        ts = snap.timestamp_ms if snap is not None else None
+        if ts == getattr(self, "_last_render_ts", None) and snap is not None:
+            # 同一帧(重复推)跳过;但 None 帧每次都跑让 UI 知道"无数据"
+            return
+        self._last_render_ts = ts
         self._update_preview(snap)
         self._update_status_light(snap)
         self._update_diagnostics(snap)
@@ -568,19 +577,21 @@ class GesturePage(QWidget):
         self._current_gesture = g
         # error.txt [19]:race condition。第二次触发会覆盖第一次的清除时刻,
         # 导致高亮闪一下就灭。保存 timer 实例,新一次高亮前先 stop 旧 timer。
+        # kasi.txt [35]:之前每帧新 QTimer,改用持久 timer(每个 row 一个)复用,
+        # 避免 timer 累积。
         for row_dict in (self._cheat_rows, self._binding_rows):
             if g in row_dict:
                 row = row_dict[g]
-                # stop 旧清除 timer(如果有)
-                prev = getattr(row, "_clear_timer", None)
-                if prev is not None:
-                    prev.stop()
+                # 复用已有的清除 timer(没有就建一个)
+                timer = getattr(row, "_clear_timer", None)
+                if timer is None:
+                    timer = QTimer(self)  # parent=self 防止 GC
+                    timer.setSingleShot(2000)
+                    timer.timeout.connect(lambda r=row: r.setStyleSheet(""))
+                    row._clear_timer = timer
+                timer.stop()  # 先停,再 start 等同于 reset
                 row.setStyleSheet("background:rgba(34,197,94,0.4);border-radius:6px;")
-                timer = QTimer()
-                timer.setSingleShot(2000)
-                timer.timeout.connect(lambda r=row: r.setStyleSheet(""))
                 timer.start()
-                row._clear_timer = timer  # 保持引用防 GC
         # 3. 试用当前识别
         self._trial_now.setText(_GESTURE_NAME.get(g, g))
         self._trial_now.setStyleSheet("color:#22c55e;font-size:14px;font-weight:600;")

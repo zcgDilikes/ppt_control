@@ -223,13 +223,17 @@ class GestureEngine:
 
         try:
             while not self._stop_event.is_set():
+                # kasi.txt [29]:摄像头 fail 时用 _stop_event.wait 阻塞,
+                # stop 路径立即唤醒(避免最坏 20ms 延迟),失败时挂起不占 CPU。
                 ok, frame = cap.read()
                 if not ok or frame is None:
                     consecutive_read_failures += 1
                     if consecutive_read_failures >= 30:
                         self._safe_status("摄像头连续读取失败，已停止")
                         break
-                    time.sleep(0.02)
+                    # 阻塞等待 stop 事件,无信号时挂起(不占 CPU)
+                    if self._stop_event.wait(timeout=0.5):
+                        break
                     continue
                 consecutive_read_failures = 0
 

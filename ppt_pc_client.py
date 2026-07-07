@@ -562,11 +562,26 @@ def _ppt_notes_on_settings_changed() -> None:
         _ppt_notes_broadcast_clear()
 
 
+def _strict_bool(v) -> bool:
+    """error.txt [30]:严格 bool 解析。手机端若把 ppt_notes_enabled="false"
+    字符串传过来,bool("false")==True 是错的。这里显式接受
+    True/1/'1'/'true'/'yes' / 数字非零,其他 False。
+    """
+    if isinstance(v, bool):
+        return v
+    if isinstance(v, (int, float)):
+        return bool(v)
+    if isinstance(v, str):
+        return v.strip().lower() in ("1", "true", "yes", "on")
+    return False
+
+
 def merge_remote_client_settings(data: dict) -> None:
     patch = {}
     for k in ("screenshot_open_folder", "transfer_open_folder", "transfer_open_ppt", "ppt_notes_enabled"):
         if k in data:
-            patch[k] = bool(data[k])
+            # error.txt [30]:用严格 bool 解析,避免 bool("false")==True
+            patch[k] = _strict_bool(data[k])
     if not patch:
         return
     set_client_settings(**patch)
@@ -736,11 +751,25 @@ def save_room_id(rid: str) -> None:
 # ==========================================
 # 文件下载函数
 # ==========================================
+def _sanitize_filename(name: str) -> str:
+    """error.txt [25]:清洗文件名,防止路径穿越(../../../etc/passwd)。
+    只保留 [A-Za-z0-9._-],其他替换为下划线;空结果用 UUID 兜底。
+    """
+    import re as _re
+    import uuid as _uuid
+    cleaned = _re.sub(r'[^A-Za-z0-9._-]', '_', name)
+    if not cleaned or cleaned in ('.', '..'):
+        cleaned = f"download_{_uuid.uuid4().hex[:8]}"
+    return cleaned
+
+
 def download_file(uri):
     """同步下载（可在任意线程调用）。内部按文件名持分桶锁,
     不同文件可并行下载,同名文件串行以免覆盖。"""
     file_url = SERVER_BASE + uri
-    file_name = os.path.basename(file_url.split("?")[0])
+    raw_name = os.path.basename(file_url.split("?")[0])
+    # error.txt [25]:清洗文件名,防止恶意 URL 越界写
+    file_name = _sanitize_filename(raw_name)
     save_path = os.path.join(SAVE_DIR, file_name)
     abs_path = os.path.abspath(save_path)
     # kasi.txt [26]:用分桶锁(按文件路径)替代全局锁,允许多文件并行下载
