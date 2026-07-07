@@ -110,6 +110,8 @@ class GestureSemantics:
         self._pairing = PairingService(self.cfg.sensitivity)
         # interlock dwell 计时起点(2026-07-07:必须初始化,否则首帧 _detect_interlock 会 AttributeError)
         self._interlock_start: Optional[float] = None
+        # 9-events: interlock 上升沿状态机(plan 2026-07-07 显式引入)
+        self._interlock_state: str = "NONE"
 
     # ------------------------------------------------------------------
     # 配置热更新
@@ -145,6 +147,8 @@ class GestureSemantics:
         self._pairing = PairingService(self.cfg.sensitivity)
         # interlock dwell 也重置(2026-07-07:与配对 reset 同等待遇)
         self._interlock_start = None
+        # 9-events: interlock 上升沿状态机重置
+        self._interlock_state = "NONE"
 
     # ------------------------------------------------------------------
     # 配对(委托给 PairingService)
@@ -454,6 +458,7 @@ class GestureSemantics:
         except (TypeError, ValueError):
             min_confidence = 0.6
 
+        slot_lms: Dict[str, list] = {}  # 9-events: 收集 per-slot 关键点给 interlock 用
         if hand_landmarks_list:
             for idx, lm_list in enumerate(hand_landmarks_list):
                 if not lm_list or len(lm_list) < 21:
@@ -475,6 +480,7 @@ class GestureSemantics:
                 st = self._slots[slot]
                 st.last_seen_monotonic = now
                 active_slots.add(slot)
+                slot_lms[slot] = lm_list  # 9-events: 保存
                 events.extend(self._process_one_hand(lm_list, slot, st, sens, now))
 
         # 配对:喂 PairingService 当前各 slot 状态,看是否确认
@@ -497,6 +503,39 @@ class GestureSemantics:
                     st.last_static_gesture = self.G_NONE
                     st.last_static_at = 0.0
                     st.static_cooldown_until = 0.0
+                    # 9-events:重置 tip/interlock 冷却
+                    st.last_tip_gesture = self.G_NONE
+                    st.tip_cooldown_until = 0.0
+                    st.last_interlock_gesture = self.G_NONE
+                    st.interlock_cooldown_until = 0.0
+        # 9-events:手消失也清掉 interlock dwell 计时,避免下次入画面看到陈旧 start
+        if not active_slots:
+            self._interlock_start = None
+
+        # 9-events: cross-slot interlock 检测(仅 dual)
+        operator_mode = self.cfg.operator_mode
+        if operator_mode == "dual":
+            try:
+                cooldown_ms = int(sens.get("gesture_cooldown_ms", 400))
+            except (TypeError, ValueError):
+                cooldown_ms = 400
+            lm_a = slot_lms.get("A")
+            lm_b = slot_lms.get("B")
+            interlock_hit = self._detect_interlock(lm_a, lm_b, now)
+            st_a = self._slots["A"]
+            self._interlock_state = "HANDS_INTERLOCK" if interlock_hit else "NONE"
+            if interlock_hit and self._interlock_state != st_a.last_interlock_gesture:
+                if now >= st_a.interlock_cooldown_until and cooldown_ms > 0:
+                    events.append({
+                        "event_class": "interlock",
+                        "type": "interlock",
+                        "gesture": "HANDS_INTERLOCK",
+                        "slot": "BOTH",
+                        "ts": now, "ts_ms": int(now * 1000),
+                        "source": "gesture:interlock",
+                    })
+                    st_a.interlock_cooldown_until = now + cooldown_ms / 1000.0
+            st_a.last_interlock_gesture = self._interlock_state
 
         return events
 
@@ -641,6 +680,27 @@ class GestureSemantics:
         else:
             # 不允许该槽位产生捏合 → 重置
             st.pinching = False
+
+        # ----- 4) 9-event tip_touch 通道(独立于 7 旧 gesture) -----
+        # spec 2026-07-07:仅 dual 模式生效;冷却与 static 独立
+        if operator_mode == "dual":
+            try:
+                cooldown_ms = int(sens.get("gesture_cooldown_ms", 400))
+            except (TypeError, ValueError):
+                cooldown_ms = 400
+            tip = self._detect_tip_touches(lm, slot)
+            if tip and tip != st.last_tip_gesture:
+                if now >= st.tip_cooldown_until and cooldown_ms > 0:
+                    events.append({
+                        "event_class": "tip_touch",
+                        "type": "tip_touch",
+                        "gesture": tip,
+                        "slot": slot,
+                        "ts": ts, "ts_ms": ts_ms,
+                        "source": f"gesture:{slot}",
+                    })
+                    st.tip_cooldown_until = now + cooldown_ms / 1000.0
+            st.last_tip_gesture = tip
 
         return events
 

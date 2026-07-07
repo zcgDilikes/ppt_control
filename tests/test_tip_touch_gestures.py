@@ -265,3 +265,81 @@ def test_detect_interlock_wrist_too_far():
     sem._detect_interlock(a, b, t0)
     time.sleep(0.4)
     assert sem._detect_interlock(a, b, time.monotonic()) is False
+
+
+# ---------------------------------------------------------------------------
+# Task 5: process() 集成 9 事件
+# ---------------------------------------------------------------------------
+def test_process_emits_tip_touch_in_dual_mode():
+    """dual 模式 + 拇指触食指 → L_HAND_INDEX 事件"""
+    from pc_gesture.semantics import GestureSemantics
+    from pc_gesture.config import load_gesture_config
+    cfg = load_gesture_config()
+    cfg.raw["operator_mode"] = "dual"
+    cfg.raw["dual_roles_swapped"] = False  # 测试要确认 slot A,需把互换关掉
+    sem = GestureSemantics(cfg)
+    # 模拟 slot A 手(wrist 在画面左侧)
+    lm_a = _make_tip_hand((0.5, 0.2), (0.5, 0.2), wrist_xy=(0.3, 0.7))
+    lm_b = [_P(0.0, 0.0) for _ in range(21)]  # 另一只手不可见
+    events = sem.process([lm_a, lm_b], [[], []])
+    tip_events = [e for e in events if e.get("type") == "tip_touch"]
+    assert len(tip_events) == 1
+    assert tip_events[0]["gesture"] == "L_HAND_INDEX"
+    assert tip_events[0]["slot"] == "A"
+
+
+def test_process_no_tip_touch_in_single_mode_for_R_prefix():
+    """single 模式只产 L_*(slot A),即使给两手 landmarks 也只识别 A 槽"""
+    from pc_gesture.semantics import GestureSemantics
+    from pc_gesture.config import load_gesture_config
+    cfg = load_gesture_config()
+    cfg.raw["operator_mode"] = "single"
+    sem = GestureSemantics(cfg)
+    lm_a = _make_tip_hand((0.5, 0.2), (0.5, 0.2), wrist_xy=(0.3, 0.7))  # 左侧
+    lm_b = _make_tip_hand((0.5, 0.2), (0.5, 0.2), wrist_xy=(0.7, 0.7))  # 右侧
+    events = sem.process([lm_a, lm_b], [[], []])
+    tip_events = [e for e in events if e.get("type") == "tip_touch"]
+    # single 模式 _process_one_hand 只调 A 槽,所以即使有两手也只产 L_*
+    for e in tip_events:
+        assert e["gesture"].startswith("L_HAND_")
+
+
+def test_process_tip_touch_cooldown_independent_from_static():
+    """tip 事件冷却独立于 7 旧 gesture 冷却"""
+    from pc_gesture.semantics import GestureSemantics
+    from pc_gesture.config import load_gesture_config
+    import time
+    cfg = load_gesture_config()
+    cfg.raw["operator_mode"] = "dual"
+    cfg.raw["dual_roles_swapped"] = False  # 测试要确认 slot A,需把互换关掉
+    cfg.raw["sensitivity"]["gesture_cooldown_ms"] = 400
+    sem = GestureSemantics(cfg)
+    # 第 1 帧:slot A 触食指
+    lm_a = _make_tip_hand((0.5, 0.2), (0.5, 0.2), wrist_xy=(0.3, 0.7))
+    lm_b = [_P(0.0, 0.0) for _ in range(21)]
+    events1 = sem.process([lm_a, lm_b], [[], []])
+    assert any(e.get("type") == "tip_touch" for e in events1)
+    # 第 2 帧(立刻,小于 400ms 冷却):tip 应该被挡
+    events2 = sem.process([lm_a, lm_b], [[], []])
+    assert not any(e.get("type") == "tip_touch" for e in events2)
+
+
+def test_process_emits_interlock_event():
+    """双手 interlock 触发 HANDS_INTERLOCK"""
+    from pc_gesture.semantics import GestureSemantics
+    from pc_gesture.config import load_gesture_config
+    import time
+    cfg = load_gesture_config()
+    cfg.raw["operator_mode"] = "dual"
+    cfg.raw["dual_roles_swapped"] = False  # 测试要确认 slot A,需把互换关掉
+    sem = GestureSemantics(cfg)
+    a, b = _make_two_hands_close()
+    # 第 1 帧:初始化 dwell
+    sem.process([a, b], [[], []])
+    # 0.4s 后:interlock 触发
+    time.sleep(0.4)
+    events = sem.process([a, b], [[], []])
+    interlock_events = [e for e in events if e.get("type") == "interlock"]
+    assert len(interlock_events) == 1
+    assert interlock_events[0]["gesture"] == "HANDS_INTERLOCK"
+    assert interlock_events[0]["slot"] == "BOTH"
