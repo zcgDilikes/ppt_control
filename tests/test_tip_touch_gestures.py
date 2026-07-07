@@ -185,3 +185,83 @@ def test_detect_tip_touch_chooses_nearest():
     # 与 RING/PINKY 更远。所以应选 MIDDLE
     lm = _make_tip_hand((0.6, 0.2), (0.6, 0.2))
     assert sem._detect_tip_touches(lm, "A") == "L_HAND_MIDDLE"
+
+
+# ---------------------------------------------------------------------------
+# Task 4: _detect_interlock (cross-slot)
+# ---------------------------------------------------------------------------
+def _make_two_hands_close():
+    """构造两手相距近 + 10 指尖两两距离近 → 满足 interlock 条件。"""
+    a = [_P(0.0, 0.0) for _ in range(21)]
+    a[0] = _P(0.3, 0.5)  # WRIST
+    a[5] = a[9] = a[13] = a[17] = _P(0.35, 0.4)  # MCP
+    a[8] = _P(0.4, 0.3)  # INDEX_TIP
+    a[12] = _P(0.42, 0.32)  # MIDDLE_TIP
+    a[16] = _P(0.44, 0.34)  # RING_TIP
+    a[20] = _P(0.46, 0.36)  # PINKY_TIP
+    a[4] = _P(0.38, 0.35)  # THUMB_TIP
+    for tip_idx, pip_idx in ((8, 6), (12, 10), (16, 14), (20, 18)):
+        a[pip_idx] = _P(0.4, 0.4)
+
+    b = [_P(0.0, 0.0) for _ in range(21)]
+    b[0] = _P(0.5, 0.5)  # WRIST(距 a 的 wrist 0.2)
+    b[5] = b[9] = b[13] = b[17] = _P(0.45, 0.4)
+    b[8] = _P(0.4, 0.3)
+    b[12] = _P(0.42, 0.32)
+    b[16] = _P(0.44, 0.34)
+    b[20] = _P(0.46, 0.36)
+    b[4] = _P(0.42, 0.35)
+    for tip_idx, pip_idx in ((8, 6), (12, 10), (16, 14), (20, 18)):
+        b[pip_idx] = _P(0.4, 0.4)
+    return a, b
+
+
+def test_detect_interlock_two_hands_close():
+    import time
+    from pc_gesture.semantics import GestureSemantics
+    from pc_gesture.config import load_gesture_config
+    sem = GestureSemantics(load_gesture_config())
+    a, b = _make_two_hands_close()
+    # 第一次调用,设 _interlock_start
+    assert sem._detect_interlock(a, b, time.monotonic()) is False
+    # 持续 0.3s 后再调 → True
+    time.sleep(0.35)
+    assert sem._detect_interlock(a, b, time.monotonic()) is True
+
+
+def test_detect_interlock_requires_both_hands():
+    import time
+    from pc_gesture.semantics import GestureSemantics
+    from pc_gesture.config import load_gesture_config
+    sem = GestureSemantics(load_gesture_config())
+    a, _ = _make_two_hands_close()
+    assert sem._detect_interlock(a, None, time.monotonic()) is False
+    assert sem._detect_interlock(None, a, time.monotonic()) is False
+
+
+def test_detect_interlock_dwell_time():
+    import time
+    from pc_gesture.semantics import GestureSemantics
+    from pc_gesture.config import load_gesture_config
+    sem = GestureSemantics(load_gesture_config())
+    a, b = _make_two_hands_close()
+    # 第一次调用,设 start;0.1s 内调,dwell 未到 → False
+    t0 = time.monotonic()
+    sem._detect_interlock(a, b, t0)
+    assert sem._detect_interlock(a, b, t0 + 0.1) is False
+    # 0.3s 后 → True
+    assert sem._detect_interlock(a, b, t0 + 0.35) is True
+
+
+def test_detect_interlock_wrist_too_far():
+    import time
+    from pc_gesture.semantics import GestureSemantics
+    from pc_gesture.config import load_gesture_config
+    sem = GestureSemantics(load_gesture_config())
+    a, b = _make_two_hands_close()
+    # 把 b 的 wrist 拉到远处
+    b[0] = _P(0.9, 0.9)
+    t0 = time.monotonic()
+    sem._detect_interlock(a, b, t0)
+    time.sleep(0.4)
+    assert sem._detect_interlock(a, b, time.monotonic()) is False
