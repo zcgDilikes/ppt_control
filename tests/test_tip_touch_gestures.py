@@ -403,3 +403,42 @@ def test_bridge_routes_old_gesture_to_binding():
     })
     assert len(dispatcher.calls) == 1
     assert dispatcher.calls[0]["cmd"] == "NEXT_PAGE"
+
+
+# ---------------------------------------------------------------------------
+# Task 7: UI 9 个新 combo box + dual mode disable
+# ---------------------------------------------------------------------------
+def test_gesture_page_has_16_combos():
+    """UI 应该有 7 旧 combo + 9 新 combo = 16 个"""
+    import os
+    os.environ["QT_QPA_PLATFORM"] = "offscreen"
+    from PySide6.QtWidgets import QApplication
+    from ppt_qt.pages.gesture_page import GesturePage
+    app = QApplication.instance() or QApplication([])
+    from ppt_core.gesture_bridge import GestureBridge
+    bridge = GestureBridge(dispatcher=None, on_status=lambda t: None, on_fps=lambda f: None)
+    # dual 模式 → 9 个新 combo 全部 enable
+    bridge.cfg.raw["operator_mode"] = "dual"
+    page = GesturePage(bridge=bridge)
+    # 7 旧 + 9 新
+    assert len(page._binding_combos) == 7
+    assert len(page._tip_combos) == 9
+    # dual 模式下 9 个新 combo 都 enable
+    for combo in page._tip_combos:
+        assert combo.isEnabled()
+
+
+def test_gesture_page_disables_tip_combos_in_single_mode():
+    """single 模式时 9 个新 combo 应该 disable(并 tooltip 提示)"""
+    import os
+    os.environ["QT_QPA_PLATFORM"] = "offscreen"
+    from PySide6.QtWidgets import QApplication
+    from ppt_qt.pages.gesture_page import GesturePage
+    from ppt_core.gesture_bridge import GestureBridge
+    app = QApplication.instance() or QApplication([])
+    bridge = GestureBridge(dispatcher=None, on_status=lambda t: None, on_fps=lambda f: None)
+    bridge.cfg.raw["operator_mode"] = "single"
+    page = GesturePage(bridge=bridge)
+    for combo in page._tip_combos:
+        assert not combo.isEnabled()
+        assert "双人模式" in combo.toolTip()

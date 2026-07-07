@@ -14,7 +14,7 @@ from PySide6.QtWidgets import (
     QSpinBox, QDoubleSpinBox,
 )
 
-from pc_gesture.config import GESTURES, ACTIONS
+from pc_gesture.config import GESTURES, ACTIONS, TIP_GESTURES
 
 # 手势显示:枚举 → emoji + 中文名
 _GESTURE_META = {
@@ -45,6 +45,19 @@ _ACTION_LABEL = {
 # 反向：gesture -> 中文名
 _GESTURE_NAME = {k: v[1] for k, v in _GESTURE_META.items()}
 
+# 9-event 提示(emoji + 中文名)
+_TIP_GESTURE_META = {
+    "L_HAND_INDEX":    ("👆", "左手拇指触食指"),
+    "L_HAND_MIDDLE":   ("🖕", "左手拇指触中指"),
+    "L_HAND_RING":     ("💍", "左手拇指触无名指"),
+    "L_HAND_PINKY":    ("🤙", "左手拇指触小拇指"),
+    "R_HAND_INDEX":    ("👆", "右手拇指触食指"),
+    "R_HAND_MIDDLE":   ("🖕", "右手拇指触中指"),
+    "R_HAND_RING":     ("💍", "右手拇指触无名指"),
+    "R_HAND_PINKY":    ("🤙", "右手拇指触小拇指"),
+    "HANDS_INTERLOCK": ("🤝", "双手十指相扣"),
+}
+
 
 class GesturePage(QWidget):
     def __init__(self, *, bridge, on_status=None, parent=None):
@@ -54,6 +67,8 @@ class GesturePage(QWidget):
         self._on_status = on_status
         self._history: List[Dict] = []
         self._current_gesture: Optional[str] = None
+        # ---- 9-event: tip combo boxes(在 _build_right_column 末尾填充) ----
+        self._tip_combos: List[QComboBox] = []
 
         # ---- frame snapshot 状态 ----
         self._last_hand_seen_at: float = 0.0   # 最近一次看到手的 wall-clock (currently unused; reserved for spec §3 boundary #3 timing)
@@ -128,6 +143,9 @@ class GesturePage(QWidget):
         self._frame_poll_timer.setInterval(150)
         self._frame_poll_timer.timeout.connect(self._poll_latest_snapshot)
         self._frame_poll_timer.start()
+
+        # ---- 9-event: 构造完成后立即应用 operator_mode 状态(单/双人) ----
+        self._refresh_tip_combos_enabled()
 
     # ----- 私有：构建左右两栏 -----
     def _build_left_column(self) -> QFrame:
@@ -286,6 +304,47 @@ class GesturePage(QWidget):
             cb.currentIndexChanged.connect(lambda _idx, gg=g: self._on_binding_changed(gg))
             self._binding_combos[g] = cb
             self._binding_rows[g] = row
+            rl.addWidget(cb, 1, Qt.AlignVCenter)
+            cl.addWidget(row)
+
+        # ---- 9-event: 9 个新 combo box(仅 dual 模式有效) ----
+        sep = QFrame()
+        sep.setFrameShape(QFrame.HLine)
+        sep.setFrameShadow(QFrame.Sunken)
+        sep.setStyleSheet("color:rgba(255,255,255,80);margin:8px 0;")
+        cl.addWidget(sep)
+        tip_label = QLabel("新 9-事件(需双人模式)")
+        tip_label.setStyleSheet("color:rgba(255,255,255,200);font-size:12px;font-weight:600;margin-top:4px;")
+        cl.addWidget(tip_label)
+        for g in TIP_GESTURES:
+            row = QFrame()
+            row.setObjectName("TipBindingRow")
+            rl = QHBoxLayout(row)
+            rl.setContentsMargins(6, 2, 6, 2)
+            rl.setSpacing(8)
+            emoji, name = _TIP_GESTURE_META.get(g, ("", g))
+            ico_lbl = QLabel(emoji)
+            ico_lbl.setFixedWidth(24)
+            ico_lbl.setStyleSheet("font-size:14px;")
+            rl.addWidget(ico_lbl, 0, Qt.AlignVCenter)
+            name_lbl = QLabel(name)
+            name_lbl.setMinimumWidth(180)
+            name_lbl.setStyleSheet("font-size:12px;")
+            rl.addWidget(name_lbl, 0, Qt.AlignVCenter)
+            cb = QComboBox()
+            cb.addItem("无", userData=None)
+            for a in ACTIONS:
+                cb.addItem(_ACTION_LABEL[a], userData=a)
+            # set current from cfg.tip_bindings
+            cur = self._cfg.get_tip_binding(g)
+            for i in range(cb.count()):
+                if cb.itemData(i) == cur:
+                    cb.setCurrentIndex(i)
+                    break
+            cb.currentIndexChanged.connect(
+                lambda v, gg=g: self._on_tip_binding_changed(gg, v)
+            )
+            self._tip_combos.append(cb)
             rl.addWidget(cb, 1, Qt.AlignVCenter)
             cl.addWidget(row)
 
@@ -710,6 +769,27 @@ class GesturePage(QWidget):
             )
         self._status_lbl.setText(f"已更新 {gesture} -> {action or '禁用'}")
 
+    def _on_tip_binding_changed(self, gesture: str, idx: int) -> None:
+        """9-event combo box 变化时写回 cfg,持久化。"""
+        cb = self.sender()
+        if cb is None:
+            return
+        action = cb.itemData(idx)
+        try:
+            self._cfg.set_tip_binding(gesture, action)
+        except ValueError:
+            return
+        self._bridge.save()
+        self._status_lbl.setText(f"已更新 {gesture} -> {action or '禁用'}")
+
+    def _refresh_tip_combos_enabled(self) -> None:
+        """dual mode off → 9 个 tip combo 禁用 + tooltip 提示。"""
+        enabled = (self._cfg.operator_mode == "dual")
+        tip = "需切到「双人模式」才能使用" if not enabled else ""
+        for cb in self._tip_combos:
+            cb.setEnabled(enabled)
+            cb.setToolTip(tip)
+
     def _refresh_query_hint(self) -> None:
         sel = self._query_combo.currentData()
         if sel is None:
@@ -725,9 +805,20 @@ class GesturePage(QWidget):
 
     def _on_reset_defaults(self) -> None:
         self._cfg.reset_bindings()
+        # 9-event: 重置 tip_bindings 到默认值
+        from pc_gesture.config import DEFAULT_TIP_BINDINGS
+        for g in TIP_GESTURES:
+            self._cfg.set_tip_binding(g, DEFAULT_TIP_BINDINGS.get(g))
         self._bridge.save()
         for g, cb in self._binding_combos.items():
             self._populate_combo(g, cb)
+        # 9-event: 同步刷新 9 个 tip combo 当前值
+        for g, cb in zip(TIP_GESTURES, self._tip_combos):
+            cur = self._cfg.get_tip_binding(g)
+            for i in range(cb.count()):
+                if cb.itemData(i) == cur:
+                    cb.setCurrentIndex(i)
+                    break
         self._refresh_query_hint()
         self._status_lbl.setText("已恢复默认映射")
 
