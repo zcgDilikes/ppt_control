@@ -442,3 +442,132 @@ def test_gesture_page_disables_tip_combos_in_single_mode():
     for combo in page._tip_combos:
         assert not combo.isEnabled()
         assert "双人模式" in combo.toolTip()
+
+
+# ---------------------------------------------------------------------------
+# Critical fix: bridge.save() must mirror tip_bindings into engine.cfg
+# ---------------------------------------------------------------------------
+def test_bridge_save_with_engine_persists_tip_bindings(monkeypatch, tmp_path):
+    """Critical: bridge.save() with engine started must persist tip_bindings.
+
+    Regression: previously save() only mirrored ``bindings`` into
+    ``engine.cfg.raw``, silently dropping ``tip_bindings`` edits made via the
+    new combo boxes. After save(), the engine's cfg should reflect the bridge's
+    tip_bindings and the change should round-trip to disk.
+    """
+    import sys
+    from pc_gesture.config import load_gesture_config, save_gesture_config
+    import pc_gesture.config as cfg_mod
+
+    # Patch the config path so we don't touch the user's real config.
+    cfg_path = tmp_path / "g.json"
+    orig_path = cfg_mod.GESTURE_CONFIG_PATH
+    cfg_mod.GESTURE_CONFIG_PATH = str(cfg_path)
+
+    # Build a FakeEngine with a real GestureConfig (with raw dict for tip_bindings).
+    captured = {"save_config_calls": 0}
+
+    class _FakeEngine:
+        def __init__(self, *, dispatch_fn, on_status, on_fps, on_frame=None):
+            self.cfg = load_gesture_config()
+        def start(self): return None
+        def stop(self): pass
+        def start_pairing(self): pass
+        def reset_pairing(self): pass
+        def save_config(self):
+            captured["save_config_calls"] += 1
+            save_gesture_config(self.cfg)
+
+    try:
+        # Force fresh reload of bridge with patched GestureEngine
+        monkeypatch.delitem(sys.modules, "ppt_core.gesture_bridge", raising=False)
+        import ppt_core.gesture_bridge as bridge_mod
+        monkeypatch.setattr(bridge_mod, "GestureEngine", _FakeEngine)
+        dispatcher = _FakeDispatcher()
+        bridge = bridge_mod.GestureBridge(
+            dispatcher=dispatcher,
+            on_status=lambda s: None,
+            on_fps=lambda f: None,
+        )
+        # Reload bridge's cfg from our temp path so it starts with defaults.
+        bridge._cfg = load_gesture_config(path=str(cfg_path))
+
+        # UI edits a tip binding via combo box → bridge.cfg.set_tip_binding.
+        bridge.cfg.set_tip_binding("L_HAND_INDEX", "EXIT")
+
+        # Force engine creation so save() takes the engine branch.
+        bridge._engine = _FakeEngine(
+            dispatch_fn=lambda *a, **k: None,
+            on_status=lambda t: None,
+            on_fps=lambda f: None,
+        )
+
+        # Trigger save — must mirror tip_bindings to engine.cfg.
+        bridge.save()
+
+        # engine.cfg.tip_bindings must now reflect the UI change.
+        assert bridge._engine.cfg.get_tip_binding("L_HAND_INDEX") == "EXIT"
+        # engine.cfg.raw["tip_bindings"] must also be updated (save_config serializes cfg.raw).
+        assert bridge._engine.cfg.raw["tip_bindings"]["L_HAND_INDEX"] == "EXIT"
+        assert captured["save_config_calls"] == 1
+
+        # Round-trip from disk: reload and verify persistence.
+        reloaded = load_gesture_config(path=str(cfg_path))
+        assert reloaded.get_tip_binding("L_HAND_INDEX") == "EXIT"
+    finally:
+        cfg_mod.GESTURE_CONFIG_PATH = orig_path
+
+
+# ---------------------------------------------------------------------------
+# Important fix: reload_config() must reset tip/interlock cooldown
+# ---------------------------------------------------------------------------
+def test_reload_config_resets_tip_interlock_cooldown():
+    """Important: reload_config() must zero out tip/interlock cooldown fields.
+
+    Regression: previously reload_config only cleared the static cooldown
+    fields. After hot-reloading config, stale ``tip_cooldown_until`` and
+    ``interlock_cooldown_until`` could suppress events for up to 400ms,
+    making the post-reload experience feel sluggish.
+    """
+    from pc_gesture.config import load_gesture_config
+    from pc_gesture.semantics import GestureSemantics, HandState
+
+    # Build a fresh semantics with default config.
+    cfg1 = load_gesture_config()
+    sem = GestureSemantics(cfg1)
+
+    # Dirty the state: populate cooldowns + last_gesture fields.
+    now = 1000.0  # arbitrary
+    for slot in ("A", "B"):
+        st = sem._slots[slot]
+        st.last_static_gesture = "FIST"
+        st.last_static_at = now
+        st.static_cooldown_until = now + 0.5
+        st.last_tip_gesture = "L_HAND_INDEX"
+        st.tip_cooldown_until = now + 0.4
+        st.last_interlock_gesture = "HANDS_INTERLOCK"
+        st.interlock_cooldown_until = now + 0.4
+        st.pinching = True
+        st.laser_last_xy = (0.5, 0.5)
+    # Also dirty the interlock dwell timer.
+    sem._interlock_start = now
+
+    # Hot-reload with a fresh config (simulates cfg-swap via UI).
+    cfg2 = load_gesture_config()
+    sem.reload_config(cfg2)
+
+    # All per-slot cooldowns + last_gesture fields must be reset.
+    for slot in ("A", "B"):
+        st = sem._slots[slot]
+        assert st.last_static_gesture == "NONE", f"slot {slot} last_static_gesture"
+        assert st.last_static_at == 0.0, f"slot {slot} last_static_at"
+        assert st.static_cooldown_until == 0.0, f"slot {slot} static_cooldown_until"
+        assert st.last_tip_gesture == "NONE", f"slot {slot} last_tip_gesture"
+        assert st.tip_cooldown_until == 0.0, f"slot {slot} tip_cooldown_until"
+        assert st.last_interlock_gesture == "NONE", f"slot {slot} last_interlock_gesture"
+        assert st.interlock_cooldown_until == 0.0, f"slot {slot} interlock_cooldown_until"
+        assert st.pinching is False, f"slot {slot} pinching"
+        assert st.laser_last_xy is None, f"slot {slot} laser_last_xy"
+
+    # Interlock dwell timer must be reset.
+    assert sem._interlock_start is None

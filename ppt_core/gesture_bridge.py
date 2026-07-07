@@ -205,16 +205,19 @@ class GestureBridge(QObject):
     def save(self) -> None:
         """Persist the bridge-owned config to disk.
 
-        The bridge is the source of truth for ``bindings`` (UI mutates
-        ``self._cfg``). When the engine exists we mirror our bindings into
-        ``engine.cfg`` BEFORE ``engine.save_config()`` runs so the on-disk
-        file reflects UI changes. When the engine has not yet been
-        constructed, we save our own cfg directly so UI mutations made
-        before the user clicks "Start gesture" still persist.
+        The bridge is the source of truth for ``bindings`` and
+        ``tip_bindings`` (UI mutates ``self._cfg``). When the engine exists
+        we mirror our bindings into ``engine.cfg`` BEFORE
+        ``engine.save_config()`` runs so the on-disk file reflects UI
+        changes. When the engine has not yet been constructed, we save our
+        own cfg directly so UI mutations made before the user clicks
+        "Start gesture" still persist.
         """
         # Ensure the in-memory cfg's raw view matches our bindings.
         if isinstance(self._cfg.raw, dict):
             self._cfg.raw["bindings"] = dict(self._cfg.bindings)
+            # 9-events: also mirror tip_bindings so UI combo-box edits persist.
+            self._cfg.raw["tip_bindings"] = dict(self._cfg.tip_bindings)
         if self._engine is not None:
             # Sync bridge-owned bindings into the engine's config object
             # so engine.save_config() writes the latest values.
@@ -222,8 +225,16 @@ class GestureBridge(QObject):
                 self._engine.cfg.bindings = dict(self._cfg.bindings)
             except Exception:
                 pass
+            # 9-events: also sync tip_bindings so the engine picks them up.
+            try:
+                self._engine.cfg.tip_bindings = dict(self._cfg.tip_bindings)
+            except Exception:
+                pass
             if isinstance(getattr(self._engine.cfg, "raw", None), dict):
                 self._engine.cfg.raw["bindings"] = dict(self._cfg.bindings)
+                # 9-events: also sync tip_bindings into the raw dict (save
+                # serializes cfg.raw).
+                self._engine.cfg.raw["tip_bindings"] = dict(self._cfg.tip_bindings)
             self._engine.save_config()
             return
         # No engine yet — persist the bridge's cfg directly.

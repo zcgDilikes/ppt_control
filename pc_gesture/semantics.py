@@ -141,6 +141,12 @@ class GestureSemantics:
             slot.static_cooldown_until = 0.0
             slot.pinching = False
             slot.laser_last_xy = None
+            # 9-events: reset tip/interlock cooldowns + last_gesture so a
+            # hot-reload doesn't suppress the first events up to 400ms.
+            slot.last_tip_gesture = self.G_NONE
+            slot.tip_cooldown_until = 0.0
+            slot.last_interlock_gesture = self.G_NONE
+            slot.interlock_cooldown_until = 0.0
         # info.txt 三.2:热更新配置时也重置配对状态,避免新旧阈值冲突
         self._pairing.reset()
         # PairingService 也要更新 sensitivity 引用
