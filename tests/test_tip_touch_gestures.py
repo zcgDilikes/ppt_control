@@ -343,3 +343,63 @@ def test_process_emits_interlock_event():
     assert len(interlock_events) == 1
     assert interlock_events[0]["gesture"] == "HANDS_INTERLOCK"
     assert interlock_events[0]["slot"] == "BOTH"
+
+
+# ---------------------------------------------------------------------------
+# Task 6: gesture_bridge 据 type 路由
+# ---------------------------------------------------------------------------
+class _FakeDispatcher:
+    def __init__(self):
+        self.calls = []
+    def dispatch(self, payload):
+        self.calls.append(payload)
+
+
+def test_bridge_routes_tip_touch_to_tip_binding():
+    """tip_touch 事件路由到 tip_bindings,不是 bindings"""
+    from ppt_core.gesture_bridge import GestureBridge
+    dispatcher = _FakeDispatcher()
+    bridge = GestureBridge(dispatcher=dispatcher, on_status=lambda t: None, on_fps=lambda f: None)
+    # 改 tip binding
+    bridge.cfg.set_tip_binding("L_HAND_INDEX", "BLACK_SCREEN")
+    # 触发 tip_touch 事件
+    bridge._on_gesture_event({
+        "type": "tip_touch",
+        "gesture": "L_HAND_INDEX",
+        "slot": "A",
+        "ts": 0.0, "ts_ms": 0,
+    })
+    assert len(dispatcher.calls) == 1
+    assert dispatcher.calls[0]["cmd"] == "BLACK_SCREEN"
+
+
+def test_bridge_routes_interlock_to_tip_binding():
+    """interlock 事件路由到 tip_bindings"""
+    from ppt_core.gesture_bridge import GestureBridge
+    dispatcher = _FakeDispatcher()
+    bridge = GestureBridge(dispatcher=dispatcher, on_status=lambda t: None, on_fps=lambda f: None)
+    bridge.cfg.set_tip_binding("HANDS_INTERLOCK", "EXIT")
+    bridge._on_gesture_event({
+        "type": "interlock",
+        "gesture": "HANDS_INTERLOCK",
+        "slot": "BOTH",
+        "ts": 0.0, "ts_ms": 0,
+    })
+    assert len(dispatcher.calls) == 1
+    assert dispatcher.calls[0]["cmd"] == "EXIT"
+
+
+def test_bridge_routes_old_gesture_to_binding():
+    """7 旧 gesture 继续走 bindings(回归测试)"""
+    from ppt_core.gesture_bridge import GestureBridge
+    dispatcher = _FakeDispatcher()
+    bridge = GestureBridge(dispatcher=dispatcher, on_status=lambda t: None, on_fps=lambda f: None)
+    # 默认 OK 绑 NEXT_PAGE
+    bridge._on_gesture_event({
+        "type": "gesture",
+        "gesture": "OK",
+        "slot": "A",
+        "ts": 0.0, "ts_ms": 0,
+    })
+    assert len(dispatcher.calls) == 1
+    assert dispatcher.calls[0]["cmd"] == "NEXT_PAGE"

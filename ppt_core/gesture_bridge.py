@@ -117,33 +117,37 @@ class GestureBridge(QObject):
     def _on_gesture_event(self, ev: dict, source: str = "gesture") -> None:
         """Engine raw gesture event entry: filter + binding lookup + dispatch.
 
-        The engine always invokes ``dispatch_fn(event, source)`` (see
-        :meth:`pc_gesture.engine.GestureEngine._safe_dispatch`), so the second
-        positional ``source`` argument must be accepted even though we only
-        use the event payload here.
-
-        kasi.txt [36]:之前 7 个 print 在热路径(每次 gesture event 都打),
-        双人模式 slot B 每次识别都打,持续几百次/秒 print + I/O。
-        加 debug_log 门控,默认关。
+        9-events spec 2026-07-07:
+          type="gesture"   → 7 旧 gesture 走 cfg.bindings
+          type="tip_touch" → 8 单手事件走 cfg.tip_bindings
+          type="interlock" → HANDS_INTERLOCK 走 cfg.tip_bindings
+          type="gesture_end" → 仅记录,不入 dispatch
         """
         if not isinstance(ev, dict):
             return
-        if ev.get("type") != "gesture":
+        ev_type = ev.get("type")
+        # gesture_end 不入 dispatch
+        if ev_type == "gesture_end":
+            return
+        # type 不在已知集合 → 忽略
+        if ev_type not in ("gesture", "tip_touch", "interlock"):
             return
         gesture = ev.get("gesture")
         slot = ev.get("slot", "A")
         # kasi.txt [36]:debug_log 默认 False,热路径只读一次
         debug = bool(self._cfg.sensitivity.get("debug_log", False))
-        if slot != "A":
+        # 9-events: tip_touch / interlock 不受 slot=="A" 限制(双槽都可触发)
+        if ev_type == "gesture" and slot != "A":
             if debug:
                 print(f"[bridge] ignored slot={slot} gesture={gesture} (only slot A fires)")
             return
-        action = self._cfg.get_binding(gesture)
-        # Always record what we recognized, regardless of teaching_mode —
-        # the UI's trial panel and the tutorial dialog both poll
-        # recent_gestures() and need to see recognition events.
+        # 9-events: 选 binding 来源
+        if ev_type in ("tip_touch", "interlock"):
+            action = self._cfg.get_tip_binding(gesture)
+        else:
+            action = self._cfg.get_binding(gesture)
+        # Always record
         self._record_recognized_gesture(gesture, action, ev, source)
-        # Teaching mode: skip the actual cmd dispatch but keep the recording.
         if self._teaching_mode:
             if debug:
                 print(f"[bridge] 🎓 教学模式 → 识别 {gesture} 但跳过 dispatch")
