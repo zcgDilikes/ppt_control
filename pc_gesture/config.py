@@ -38,6 +38,26 @@ DEFAULT_BINDINGS: Dict[str, Optional[str]] = {
     "POINTING_UP":    None,            # 激光:走 rising-edge 持续发射,不走 bindings
 }
 
+# 9 个 tip-touch 事件(单手 × 4 指尖 × 2 + 双手 interlock)
+# 见 docs/superpowers/specs/2026-07-07-gesture-9events-design.md
+TIP_GESTURES = (
+    "L_HAND_INDEX", "L_HAND_MIDDLE", "L_HAND_RING", "L_HAND_PINKY",
+    "R_HAND_INDEX", "R_HAND_MIDDLE", "R_HAND_RING", "R_HAND_PINKY",
+    "HANDS_INTERLOCK",
+)
+
+DEFAULT_TIP_BINDINGS: Dict[str, Optional[str]] = {
+    "L_HAND_INDEX":     "NEXT_PAGE",
+    "L_HAND_MIDDLE":    "PREV_PAGE",
+    "L_HAND_RING":      "FULL_SCREEN",
+    "L_HAND_PINKY":     "FROM_CURRENT",
+    "R_HAND_INDEX":     "BLACK_SCREEN",
+    "R_HAND_MIDDLE":    "WHITE_SCREEN",
+    "R_HAND_RING":      "EXIT",
+    "R_HAND_PINKY":     "SCREENSHOT",
+    "HANDS_INTERLOCK":  "OPEN_PPT",
+}
+
 # 旧 enum 字符串,用于迁移检测(代码层不再使用)
 _DEPRECATED_GESTURES = (
     "THUMBS_UP", "THUMBS_DOWN", "SWIPE_LEFT", "SWIPE_RIGHT",
@@ -57,6 +77,7 @@ DEFAULT_GESTURE_CONFIG: Dict[str, Any] = {
     "show_preview_window": True,
     "tutorial_done": False,
     "bindings": dict(DEFAULT_BINDINGS),
+    "tip_bindings": dict(DEFAULT_TIP_BINDINGS),  # 9 个 tip 事件独立绑定
     "sensitivity": {
         # 捏合：拇指尖到食指尖的距离 / 手掌参考长度；越小越严格
         "pinch_threshold": 0.32,
@@ -94,6 +115,15 @@ DEFAULT_GESTURE_CONFIG: Dict[str, Any] = {
         "pairing_pointing_up_s": 1.0,
         # 配对窗口:从 start_pairing 算起,此秒数内未确认则超时
         "pairing_window_ms": 3000,
+        # info.txt 9-events: 9 个新事件阈值
+        # 拇指尖到目标指尖的归一化距离阈值(单手 tip_touch)
+        "tip_touch_ratio": 0.55,
+        # 双手 interlock 检测:两 wrist 归一化距离上限
+        "interlock_max_wrist_dist": 0.20,
+        # 双手 interlock:10 指尖两两均值距离上限(归一化)
+        "interlock_max_tip_dist": 0.40,
+        # 双手 interlock:最小持续秒数(防误触)
+        "interlock_min_dwell_s": 0.3,
         # info.txt 二.1:Y 模糊时(hand sideways),2D 距离作为伸直兜底。
         # 模糊判定:|tip.y - pip.y| < 此值 视为手侧放,启用 2D 距离判伸直。
         "ambiguous_y_tolerance": 0.005,
@@ -119,6 +149,7 @@ class GestureConfig:
 
     raw: Dict[str, Any] = field(default_factory=dict)
     bindings: Dict[str, Optional[str]] = field(default_factory=dict)
+    tip_bindings: Dict[str, Optional[str]] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         # 从 raw['bindings'] 同步到实例属性（_merge_defaults 已合并默认值）
@@ -139,6 +170,17 @@ class GestureConfig:
                     if k not in out:
                         out[k] = v
             self.raw["bindings"] = out
+        # tip_bindings 同步(类似 bindings,缺失键用默认填)
+        raw_tip = self.raw.get("tip_bindings") if isinstance(self.raw, dict) else None
+        merged_tip: Dict[str, Optional[str]] = dict(DEFAULT_TIP_BINDINGS)
+        if isinstance(raw_tip, dict):
+            for g in TIP_GESTURES:
+                if g in raw_tip:
+                    v = raw_tip[g]
+                    merged_tip[g] = v if (v is None or v in ACTIONS) else None
+        self.tip_bindings = merged_tip
+        if isinstance(self.raw, dict):
+            self.raw["tip_bindings"] = dict(self.tip_bindings)
 
     # ----- preview_only -----
     @property
@@ -210,6 +252,19 @@ class GestureConfig:
 
     def get_binding(self, gesture: str) -> Optional[str]:
         return self.bindings.get(gesture)
+
+    # ----- tip_bindings (9-event) -----
+    def set_tip_binding(self, gesture: str, action: Optional[str]) -> None:
+        if gesture not in TIP_GESTURES:
+            raise ValueError(f"unknown tip gesture: {gesture!r}")
+        if action is not None and action not in ACTIONS:
+            raise ValueError(f"unknown action: {action!r}")
+        self.tip_bindings[gesture] = action
+        if isinstance(self.raw, dict):
+            self.raw["tip_bindings"] = dict(self.tip_bindings)
+
+    def get_tip_binding(self, gesture: str) -> Optional[str]:
+        return self.tip_bindings.get(gesture)
 
     def reset_bindings(self) -> None:
         self.bindings = dict(DEFAULT_BINDINGS)
