@@ -237,47 +237,16 @@ class GesturePage(QWidget):
         return col
 
     def _build_right_column(self) -> QFrame:
-        """Build the right column: cheat card + binding + trial + controls."""
+        """Build the right column: binding + trial + controls (no cheat card)."""
         col = QFrame()
         col.setObjectName("GlassCard")
         cl = QVBoxLayout(col)
         cl.setContentsMargins(12, 12, 12, 12)
         cl.setSpacing(8)
 
-        # ① 手势示图卡
-        cheat_title = QLabel("① 手势示图卡")
-        cheat_title.setStyleSheet("color:#ffffff;font-size:13px;font-weight:600;")
-        cl.addWidget(cheat_title)
-        self._cheat_rows: Dict[str, QFrame] = {}
-        for g in GESTURES:
-            row = QFrame()
-            row.setObjectName("CheatRow")
-            rl = QHBoxLayout(row)
-            rl.setContentsMargins(6, 4, 6, 4)
-            rl.setSpacing(8)
-            ico, name = _GESTURE_META[g]
-            ico_lbl = QLabel(ico)
-            ico_lbl.setFixedWidth(24)
-            ico_lbl.setStyleSheet("font-size:16px;")
-            rl.addWidget(ico_lbl, 0, Qt.AlignVCenter)
-            name_lbl = QLabel(name)
-            name_lbl.setStyleSheet("font-size:13px;")
-            rl.addWidget(name_lbl, 0, Qt.AlignVCenter)
-            action_lbl = QLabel("（未绑定）")
-            action_lbl.setStyleSheet("color:rgba(255,255,255,160);font-size:11px;")
-            rl.addWidget(action_lbl, 0, Qt.AlignVCenter)
-            rl.addStretch(1)
-            cl.addWidget(row)
-            self._cheat_rows[g] = row
-            row.__dict__["_action_lbl"] = action_lbl
-        for g, row in self._cheat_rows.items():
-            action = self._cfg.get_binding(g)
-            label = _ACTION_LABEL.get(action, "（未绑定）") if action else "（未绑定）"
-            row.__dict__["_action_lbl"].setText(f"→ {label}" if action else "（未绑定）")
-
-        # ② 手势映射
-        title1 = QLabel("② 手势映射")
-        title1.setStyleSheet("color:#ffffff;font-size:13px;font-weight:600;margin-top:6px;")
+        # ① 手势映射(去掉原 cheat card,节省页面空间)
+        title1 = QLabel("① 手势映射")
+        title1.setStyleSheet("color:#ffffff;font-size:13px;font-weight:600;")
         cl.addWidget(title1)
         self._binding_combos: Dict[str, QComboBox] = {}
         self._binding_rows: Dict[str, QFrame] = {}
@@ -638,7 +607,7 @@ class GesturePage(QWidget):
         # 导致高亮闪一下就灭。保存 timer 实例,新一次高亮前先 stop 旧 timer。
         # kasi.txt [35]:之前每帧新 QTimer,改用持久 timer(每个 row 一个)复用,
         # 避免 timer 累积。
-        for row_dict in (self._cheat_rows, self._binding_rows):
+        for row_dict in (self._binding_rows,):
             if g in row_dict:
                 row = row_dict[g]
                 # 复用已有的清除 timer(没有就建一个)
@@ -761,12 +730,6 @@ class GesturePage(QWidget):
         self._cfg.set_binding(gesture, action)
         self._bridge.save()
         self._refresh_query_hint()
-        # Sync the cheat-card row label too.
-        if gesture in self._cheat_rows:
-            label = _ACTION_LABEL.get(action, "（未绑定）") if action else "（未绑定）"
-            self._cheat_rows[gesture].__dict__["_action_lbl"].setText(
-                f"→ {label}" if action else "（未绑定）"
-            )
         self._status_lbl.setText(f"已更新 {gesture} -> {action or '禁用'}")
 
     def _on_tip_binding_changed(self, gesture: str, idx: int) -> None:
@@ -889,14 +852,14 @@ class GesturePage(QWidget):
             self._history.insert(0, {"ts": ts or time.time(), "gesture": gesture, "action": action})
             self._history = self._history[:5]
             self._last_seen_ts = max(self._last_seen_ts, ts or time.time())
-            # Highlight the matching row in the cheat card (green flash, 2s).
-            if hasattr(self, "_cheat_rows") and gesture in self._cheat_rows:
-                self._cheat_rows[gesture].setStyleSheet(
+            # 高亮映射行(green flash, 2s) — cheat card 已移除,只高亮 binding row
+            if hasattr(self, "_binding_rows") and gesture in self._binding_rows:
+                self._binding_rows[gesture].setStyleSheet(
                     "background:rgba(34,197,94,0.4);border-radius:6px;"
                 )
                 QTimer.singleShot(
                     2000,
-                    lambda g=gesture: self._cheat_rows[g].setStyleSheet("")
+                    lambda g=gesture: self._binding_rows[g].setStyleSheet("")
                 )
         lines = []
         for h in self._history:
