@@ -154,6 +154,15 @@ class GestureSemantics:
     def pairing_confirmed(self) -> bool:
         return self._pairing.confirmed
 
+    def current_gestures(self) -> Dict[str, str]:
+        """返回每个 slot 当前分类的手势(只读)。
+
+        kasi.txt [20]:之前 _build_frame_snapshot 每帧每只手都重调
+        _classify_static,与 process() 重复算。这里直接读 process() 已
+        写到 HandState.last_static_gesture 的结果。
+        """
+        return {slot: st.last_static_gesture for slot, st in self._slots.items()}
+
     # ------------------------------------------------------------------
     # 关键点 → 几何特征
     # ------------------------------------------------------------------

@@ -321,6 +321,8 @@ class GestureEngine:
 
         kasi.txt [9]:1080p@30fps 时 frame_rgb 持续 186MB/s 内存分配 + 拷贝。
         没有 on_frame 消费者时,frame_rgb 设 None,只算 hand landmarks(几 KB)。
+        kasi.txt [20]:static_gesture 之前每帧重调 _classify_static,与 process()
+        重复算。改读 process() 已写入 HandState.last_static_gesture。
         """
         h, w = frame.shape[:2]
         # kasi.txt [9]:仅在有消费者时分配 frame_rgb;否则 frame_rgb=None 节省
@@ -334,6 +336,10 @@ class GestureEngine:
         # 配对与槽位映射(沿用 semantics 的规则)
         is_single = self.cfg.operator_mode == "single"
         swapped = self.cfg.dual_roles_swapped
+
+        # kasi.txt [20]:复用 process() 已计算的 per-slot last_static_gesture,
+        # 不再每帧重调 _classify_static。
+        current_gestures = self._semantics.current_gestures()
 
         hands: List[HandSnapshot] = []
         for idx, lm_list in enumerate(hand_landmarks or []):
@@ -357,8 +363,8 @@ class GestureEngine:
             wrist_y = lm_list[0].y
             thumb_up = thumb_tip_y < wrist_y - 0.08
             thumb_down = thumb_tip_y > wrist_y + 0.10
-            # 用 semantics 内部方法拿到精确的 static_gesture 标签
-            static = self._semantics._classify_static(lm_list)
+            # kasi.txt [20]:从 process() 的结果读,不再重算
+            static = current_gestures.get(slot, "NONE")
             # confidence 来自 MediaPipe handedness
             try:
                 conf = float(handedness[idx][0].score) if handedness and idx < len(handedness) else 0.0

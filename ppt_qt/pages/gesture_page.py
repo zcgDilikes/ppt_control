@@ -536,13 +536,23 @@ class GesturePage(QWidget):
                     st.setText("卷曲")
                 self._finger_state_prev[key] = cur
         # 手势状态行
-        for g, lbl in self._diag_gesture_labels.items():
-            if hand.static_gesture == g:
-                lbl.setText("✓ 识别中")
-                lbl.setStyleSheet("color:#22c55e;font-size:11px;font-weight:600;")
-            else:
-                lbl.setText("—")
-                lbl.setStyleSheet("color:rgba(255,255,255,140);font-size:11px;")
+        # kasi.txt [12]:之前每帧循环 7 个 label 都 setText + setStyleSheet,
+        # 即使 static_gesture 没变也全部重置。30fps × 7 × 2 = 420 次 UI 操作/秒。
+        # 改为只在变化时更新(用 prev 缓存当前 active label)。
+        active_g = hand.static_gesture
+        prev_active = getattr(self, "_diag_active_gesture", None)
+        if active_g != prev_active:
+            # 把旧 label 重置
+            if prev_active and prev_active in self._diag_gesture_labels:
+                old_lbl = self._diag_gesture_labels[prev_active]
+                old_lbl.setText("—")
+                old_lbl.setStyleSheet("color:rgba(255,255,255,140);font-size:11px;")
+            # 把新 label 高亮
+            if active_g in self._diag_gesture_labels:
+                new_lbl = self._diag_gesture_labels[active_g]
+                new_lbl.setText("✓ 识别中")
+                new_lbl.setStyleSheet("color:#22c55e;font-size:11px;font-weight:600;")
+            self._diag_active_gesture = active_g
         self._last_hand_seen_at = time.time()
 
     def _update_sync_highlight(self, snap):
