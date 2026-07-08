@@ -14,11 +14,12 @@ from typing import Dict, List, Optional, Tuple
 class HandSnapshot:
     """One detected hand in the frame."""
 
-    slot: str                                   # "A" or "B"
+    slot: str                                   # "A" / "B" / "C"
     wrist_xy: Tuple[float, float]               # (x, y) in [0, 1]
     finger_states: Dict[str, bool]              # {"thumb":True,"index":False,...}
     static_gesture: str                         # FIST / PALM / POINTING_UP / ...
     confidence: float                           # MediaPipe handedness.score
+    person_id: int = 0                          # 0=主手,1=副手,2=第三手(3-hand mode)
     recognized_event: Optional[str] = None      # rising-edge gesture if any
 
 

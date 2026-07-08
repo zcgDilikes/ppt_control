@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
 
 from pc_gesture.config import GESTURES, ACTIONS, TIP_GESTURES, PROJECT_DIR
 from ppt_qt.widgets.smart_tray import SmartTray, make_smart_tray_from_user_data
+from ppt_qt.widgets.multi_hand_panel import MultiHandPanel
 
 # 手势显示:枚举 → emoji + 中文名
 _GESTURE_META = {
@@ -305,6 +306,10 @@ class GesturePage(QWidget):
         )
         self._overlay_gesture.setVisible(False)
         cl.addWidget(self._video_container, 1)
+
+        # 多手状态面板(3-hand slot A/B/C 颜色编码)
+        self._multi_hand_panel = MultiHandPanel()
+        cl.addWidget(self._multi_hand_panel)
 
         # 折叠区 1:手势速查(默认折叠)
         self._cheat_toggle = QCheckBox("📖 手势速查")
@@ -645,6 +650,8 @@ class GesturePage(QWidget):
         self._update_preview(snap)
         self._update_status_light(snap)
         self._update_diagnostics(snap)
+        if hasattr(self, "_multi_hand_panel"):
+            self._multi_hand_panel.update_from_snapshot(snap)
         self._update_sync_highlight(snap)
 
     def _update_preview(self, snap):
