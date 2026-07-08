@@ -17,6 +17,7 @@ from ppt_core.ppt_notes import PptNotesWorker
 from ppt_core.downloads import DownloadManager
 from ppt_core.ws_client import WsClient
 from ppt_core.gesture_bridge import GestureBridge
+from pc_gesture.config import PROJECT_DIR
 from ppt_qt.theme import GLOBAL_QSS
 from ppt_qt.widgets import Sidebar, StatusPill, GlassCard, PrimaryButton, SecondaryButton, BackgroundWidget
 from ppt_qt.overlays.spotlight import SpotlightOverlay
@@ -392,6 +393,16 @@ class PptQtApp(QObject):
         self._downloads.open_folder()
 
     def _quit_app(self):
+        # Plan §3.5: flush habits buffer to disk BEFORE stopping the bridge
+        # so SmartTray can rebuild recommendations on next start. Use a 5s
+        # debounce so rapid quit-then-relaunch doesn't write every time.
+        try:
+            user_data_dir = os.path.join(PROJECT_DIR, "user_data")
+            self._bridge.flush_habits(
+                user_data_dir=user_data_dir, debounce_seconds=5.0,
+            )
+        except Exception:
+            pass
         # error.txt [16]:逐个 stop + join 避免 C++ 对象删除后子线程还在 emit
         if self._ws is not None:
             try:

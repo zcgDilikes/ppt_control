@@ -12,6 +12,7 @@ hold a single object that:
 
 from __future__ import annotations
 
+import os
 import time
 from collections import deque
 from typing import Callable, Deque, Dict, Optional
@@ -178,6 +179,49 @@ class GestureBridge(QObject):
     def stop(self) -> None:
         if self._engine is not None:
             self._engine.stop()
+        # Flush habits on shutdown so the next start has fresh data.
+        # Debounce: skip if last save was <5s ago (avoid excessive I/O on rapid restarts).
+        try:
+            self.flush_habits(user_data_dir=None, debounce_seconds=5.0)
+        except Exception:
+            pass
+
+    # --------------------------------------------------------------- habits
+
+    def flush_habits(
+        self,
+        user_data_dir: Optional[str] = None,
+        debounce_seconds: float = 5.0,
+    ) -> bool:
+        """Persist the in-memory habits deque to disk.
+
+        Default ``user_data_dir`` is ``<PROJECT_DIR>/user_data`` (per plan
+        §3.5). With ``debounce_seconds=5.0`` (default), if a previous save
+        happened less than 5s ago, this is a no-op and returns ``False``.
+        Returns ``True`` when the disk write actually ran.
+
+        Called automatically by :meth:`stop` and by ``PptQtApp._quit_app``
+        before the dispatcher thread is torn down.
+        """
+        now = time.time()
+        if debounce_seconds > 0 and (now - self._habits_last_save) < debounce_seconds:
+            return False
+        if user_data_dir is None:
+            # Project root + user_data/. Avoid importing PROJECT_DIR from
+            # the engine module at import time (would pull in mediapipe).
+            try:
+                here = os.path.dirname(os.path.abspath(__file__))
+                project_dir = os.path.dirname(here)
+            except Exception:
+                project_dir = "."
+            user_data_dir = os.path.join(project_dir, "user_data")
+        try:
+            from ppt_core.hand_habits_storage import save_habits
+            save_habits(user_data_dir, list(self._habits))
+            self._habits_last_save = now
+            return True
+        except Exception:
+            return False
 
     def start_pairing(self) -> None:
         self._ensure().start_pairing()
