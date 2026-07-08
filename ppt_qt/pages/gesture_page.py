@@ -1054,12 +1054,19 @@ class GesturePage(QWidget):
             else:
                 toast_text = f"{emoji}  {name}"
             self._show_toast(toast_text, duration_ms=1500)
+        self._update_history_label()
+
+    def _update_history_label(self) -> None:
+        """P2.2:渲染历史回放,最新一条加 ⭐ 前缀突出。"""
         lines = []
-        for h in self._history:
+        for idx, h in enumerate(self._history):
             t = time.strftime("%H:%M:%S", time.localtime(float(h.get("ts") or 0.0)))
             aname = _ACTION_LABEL.get(h["action"], h["action"] or "无")
             gname = _GESTURE_NAME.get(h["gesture"], h["gesture"])
-            lines.append(f"{t} {gname} -> {aname}")
+            if idx == 0:
+                lines.append(f"⭐ {t}  {gname}  →  {aname}")
+            else:
+                lines.append(f"   {t}  {gname}  →  {aname}")
         self._history_lbl.setText("\n".join(lines) or "（无历史）")
 
     # ----- 公开 API（向后兼容） -----

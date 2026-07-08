@@ -1,5 +1,7 @@
 """Tests for P0.1: toast feedback when gesture triggers."""
 
+import time
+
 import pytest
 
 # Headless Qt for tests
@@ -67,6 +69,25 @@ def test_mapping_table_uses_lr_color(monkeypatch):
             lbl_colors["R"] = widget.styleSheet()
     assert "60a5fa" in lbl_colors.get("L", ""), f"L 应该是蓝色: {lbl_colors}"
     assert "fb923c" in lbl_colors.get("R", ""), f"R 应该是橙色: {lbl_colors}"
+
+
+def test_history_highlights_latest_entry(monkeypatch):
+    """P2.2:历史回放,最新一条加 ⭐ 前缀。"""
+    page = _make_page(monkeypatch)
+    page._history = [
+        {"ts": time.time(), "gesture": "OK", "action": "NEXT_PAGE"},
+        {"ts": time.time() - 5, "gesture": "L_HAND_INDEX", "action": "PREV_PAGE"},
+        {"ts": time.time() - 10, "gesture": "HANDS_INTERLOCK", "action": "OPEN_PPT"},
+    ]
+    page._update_history_label()
+    text = page._history_lbl.text()
+    # 最新一条 (OK) 加 ⭐
+    assert "⭐" in text
+    # 旧条目没有 ⭐
+    lines = text.split("\n")
+    assert lines[0].startswith("⭐")
+    assert not lines[1].startswith("⭐")
+    assert not lines[2].startswith("⭐")
 
 
 def test_toast_uses_lr_color_prefix(monkeypatch):
