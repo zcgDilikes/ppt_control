@@ -14,7 +14,8 @@ from PySide6.QtWidgets import (
     QSpinBox, QDoubleSpinBox,
 )
 
-from pc_gesture.config import GESTURES, ACTIONS, TIP_GESTURES
+from pc_gesture.config import GESTURES, ACTIONS, TIP_GESTURES, PROJECT_DIR
+from ppt_qt.widgets.smart_tray import SmartTray, make_smart_tray_from_user_data
 
 # 手势显示:枚举 → emoji + 中文名
 _GESTURE_META = {
@@ -500,6 +501,13 @@ class GesturePage(QWidget):
         self._toggle_btn.setChecked(False)
         self._toggle_btn.toggled.connect(self._on_toggle_engine)
         ctrl.addWidget(self._toggle_btn)
+        # SmartTray:顶栏 top-3 习惯动作下拉
+        self._smart_tray = make_smart_tray_from_user_data(
+            user_data_dir=os.path.join(PROJECT_DIR, "user_data"),
+            dispatcher=self._bridge._dispatcher if hasattr(self._bridge, "_dispatcher") else None,
+            top_n=3,
+        )
+        ctrl.addWidget(self._smart_tray)
         # 启动时 engine 状态变化(由 _on_bridge_status 触发)— 单按钮状态自动同步
         ctrl.addStretch(1)
         b_default = QPushButton("恢复默认")
