@@ -22,6 +22,10 @@ from ppt_qt.widgets import Sidebar, StatusPill, GlassCard, PrimaryButton, Second
 from ppt_qt.overlays.spotlight import SpotlightOverlay
 from ppt_qt.overlays.timer_overlay import TimerOverlay
 from ppt_qt.pages import ConnectPage, BehaviorPage, TransfersPage, GesturePage
+from ppt_qt.pages.splash_page import (
+    SplashPage, STAGE_IMPORTING, STAGE_LOADING_MODEL,
+    STAGE_INIT_CAMERA, STAGE_READY,
+)
 from ppt_qt.bridge import QtBridge
 
 SERVER_BASE = "https://ppt.dilikes.com"
@@ -111,14 +115,45 @@ class PptQtApp(QObject):
         Stub for Task 4 — just verifies imports succeed and emits
         ``core_ready``. Phase 5 will replace the body with the real
         engine + camera bootstrap.
+
+        Drives the splash through its 4 stages (plan §2.3).
         """
         try:
+            self._splash_update(STAGE_IMPORTING)
             import cv2  # noqa: F401
             from mediapipe.tasks import python  # noqa: F401
             from mediapipe.tasks.python import vision  # noqa: F401
+            self._splash_update(STAGE_LOADING_MODEL)
+            # Model load: try to import engine module (cheap, but logically
+            # maps to "ready to construct landmarker").
+            from pc_gesture.engine import GestureEngine  # noqa: F401
+            self._splash_update(STAGE_INIT_CAMERA)
+            # Probe camera availability — if absent, just log; the engine
+            # itself handles the open failure later.
+            try:
+                cap = cv2.VideoCapture(self._settings.get("camera_index", 0))
+                cap_opened = bool(cap.isOpened())
+                cap.release()
+            except Exception:
+                cap_opened = False
+            self._splash_update(STAGE_READY)
             self.core_ready.emit()
         except Exception as e:
             self._safe_status(f"初始化失败:{e}")
+            # Still advance to READY so the splash doesn't hang.
+            try:
+                self._splash_update(STAGE_READY)
+            except Exception:
+                pass
+
+    def _splash_update(self, stage: str) -> None:
+        """Plan §2.3: push a stage to the splash if it exists."""
+        try:
+            splash = getattr(self, "_splash", None)
+            if splash is not None:
+                splash.update_progress(stage)
+        except Exception:
+            pass
 
     def _safe_status(self, text: str) -> None:
         """Update the status pill if the UI is up; swallow errors otherwise.
@@ -138,9 +173,16 @@ class PptQtApp(QObject):
         self._win.setWindowTitle("PPT 遥控")
         self._win.setMinimumSize(620, 620)
         self._win.resize(780, 780)
+        # Plan §2.3: brief splash with 4-stage progress ring.
+        # Lives in its own QStackedWidget; once ``core_ready`` fires,
+        # we swap to the main background widget.
+        self._outer_stack = QStackedWidget()
+        self._win.setCentralWidget(self._outer_stack)
+        self._splash = SplashPage()
+        self._outer_stack.addWidget(self._splash)
+
         central = BackgroundWidget()
         central.setMinimumSize(620, 620)
-        self._win.setCentralWidget(central)
         h = QHBoxLayout(central)
         h.setContentsMargins(0, 0, 0, 0)
         h.setSpacing(0)
@@ -168,8 +210,21 @@ class PptQtApp(QObject):
             self._stack.addWidget(p)
         v.addWidget(self._stack, 1)
         h.addWidget(right, 1)
+        self._outer_stack.addWidget(central)
+
+        # When core load finishes, drop the splash.
+        self.core_ready.connect(self._on_core_ready_swap_to_main)
         self._spotlight = SpotlightOverlay()
         self._timer_overlay = TimerOverlay()
+
+    def _on_core_ready_swap_to_main(self) -> None:
+        """Plan §2.3: once core is loaded, swap splash out for main UI."""
+        try:
+            if getattr(self, "_outer_stack", None) is not None:
+                # Index 1 = central; index 0 = splash.
+                self._outer_stack.setCurrentIndex(1)
+        except Exception:
+            pass
 
     def _setup_tray(self):
         if not QSystemTrayIcon.isSystemTrayAvailable():
