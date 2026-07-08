@@ -254,92 +254,132 @@ class GesturePage(QWidget):
 
     # ----- 私有：构建左右两栏 -----
     def _build_left_column(self) -> QFrame:
-        """Build the left column: embedded preview + status light + diagnostic panel."""
+        """Build the left column: video + diagnostic overlay + collapsible 速查/教程."""
         col = QFrame()
         col.setObjectName("GlassCard")
         cl = QVBoxLayout(col)
         cl.setContentsMargins(12, 12, 12, 12)
         cl.setSpacing(8)
 
-        title = QLabel("📹 实时预览 + 诊断")
-        title.setStyleSheet("color:#ffffff;font-size:13px;font-weight:600;")
-        cl.addWidget(title)
+        # 视频容器(放视频 + 诊断 overlay)
+        self._video_container = QFrame()
+        self._video_container.setMinimumHeight(280)
+        self._video_container.setStyleSheet("background:#0a0a0a;border-radius:6px;")
+        vcl = QVBoxLayout(self._video_container)
+        vcl.setContentsMargins(0, 0, 0, 0)
+        vcl.setSpacing(0)
 
-        # 预览 QLabel,16:9 比例
+        # 视频本体
         self._preview_label = QLabel("未启动")
-        self._preview_label.setMinimumHeight(280)
         self._preview_label.setAlignment(Qt.AlignCenter)
         self._preview_label.setStyleSheet(
             "background:#0a0a0a;color:rgba(255,255,255,120);font-size:12px;"
             "border-radius:6px;"
         )
-        cl.addWidget(self._preview_label, 1)
+        vcl.addWidget(self._preview_label, 1)
 
-        # 诊断面板
-        diag_card = QFrame()
-        diag_card.setObjectName("GlassCard")
-        dl = QVBoxLayout(diag_card)
-        dl.setContentsMargins(10, 10, 10, 10)
-        dl.setSpacing(4)
-        diag_title = QLabel("诊断")
-        diag_title.setStyleSheet("color:rgba(255,255,255,180);font-size:11px;font-weight:600;")
-        dl.addWidget(diag_title)
-        # 各手势状态行
-        self._diag_gesture_labels: Dict[str, QLabel] = {}
-        for g in GESTURES:
-            row = QHBoxLayout()
-            row.setSpacing(6)
-            ico, name = _GESTURE_META[g]
-            ic = QLabel(ico)
-            ic.setFixedWidth(20)
-            ic.setStyleSheet("font-size:13px;")
-            row.addWidget(ic, 0, Qt.AlignVCenter)
-            name_lbl = QLabel(name)
-            name_lbl.setFixedWidth(50)
-            name_lbl.setStyleSheet("font-size:11px;")
-            row.addWidget(name_lbl, 0, Qt.AlignVCenter)
-            state_lbl = QLabel("—")
-            state_lbl.setStyleSheet("color:rgba(255,255,255,140);font-size:11px;font-family:Consolas,monospace;")
-            self._diag_gesture_labels[g] = state_lbl
-            row.addWidget(state_lbl, 1, Qt.AlignVCenter)
-            row.addStretch(1)
-            dl.addLayout(row)
-        # 手指状态灯
-        sep = QLabel("手指:")
-        sep.setStyleSheet("color:rgba(255,255,255,150);font-size:11px;margin-top:6px;")
-        dl.addWidget(sep)
-        self._finger_lights: Dict[str, tuple] = {}
-        finger_names = [("thumb", "拇指"), ("index", "食指"), ("middle", "中指"), ("ring", "无名指"), ("pinky", "小指")]
-        for key, name in finger_names:
-            row = QHBoxLayout()
-            row.setSpacing(6)
-            name_lbl = QLabel(name)
-            name_lbl.setFixedWidth(50)
-            name_lbl.setStyleSheet("font-size:11px;")
-            row.addWidget(name_lbl, 0, Qt.AlignVCenter)
-            light_lbl = QLabel("○")
-            light_lbl.setFixedWidth(16)
-            light_lbl.setStyleSheet("color:#6b7280;font-size:14px;")
-            row.addWidget(light_lbl, 0, Qt.AlignVCenter)
-            state_lbl = QLabel("卷曲")
-            state_lbl.setStyleSheet("color:rgba(255,255,255,140);font-size:11px;")
-            row.addWidget(state_lbl, 0, Qt.AlignVCenter)
-            row.addStretch(1)
-            self._finger_lights[key] = (light_lbl, state_lbl)
-            dl.addLayout(row)
-        # 手位置 / 置信度 / slot
-        self._hand_xy_lbl = QLabel("手位置: —")
-        self._hand_xy_lbl.setStyleSheet("color:rgba(255,255,255,150);font-size:11px;")
-        dl.addWidget(self._hand_xy_lbl)
-        self._conf_lbl = QLabel("置信度: —")
-        self._conf_lbl.setStyleSheet("color:rgba(255,255,255,150);font-size:11px;")
-        dl.addWidget(self._conf_lbl)
-        self._slot_lbl = QLabel("Slot: —")
-        self._slot_lbl.setStyleSheet("color:rgba(255,255,255,150);font-size:11px;")
-        dl.addWidget(self._slot_lbl)
-        cl.addWidget(diag_card)
+        # 诊断 overlay(直接覆盖在视频上)
+        # 左上:状态灯+置信度+Slot
+        self._overlay_status = QLabel(self._video_container)
+        self._overlay_status.setStyleSheet(
+            "background:rgba(0,0,0,0.7);color:#ffffff;padding:6px 10px;"
+            "border-radius:4px;font-size:11px;"
+        )
+        self._overlay_status.setText("🟢 已识别")
+        self._overlay_status.move(8, 8)
+        self._overlay_status.adjustSize()
+
+        # 底部:手位置
+        self._overlay_hand = QLabel(self._video_container)
+        self._overlay_hand.setStyleSheet(
+            "background:rgba(0,0,0,0.7);color:#ffffff;padding:6px 10px;"
+            "border-radius:4px;font-size:11px;font-family:Consolas,monospace;"
+        )
+        self._overlay_hand.setText("手位置: —")
+        # 右上:当前触发的手势名
+        self._overlay_gesture = QLabel(self._video_container)
+        self._overlay_gesture.setStyleSheet(
+            "background:rgba(34,197,94,0.85);color:#ffffff;padding:6px 12px;"
+            "border-radius:4px;font-size:12px;font-weight:600;"
+        )
+        self._overlay_gesture.setVisible(False)
+        cl.addWidget(self._video_container, 1)
+
+        # 折叠区 1:手势速查(默认折叠)
+        self._cheat_toggle = QCheckBox("📖 手势速查")
+        self._cheat_toggle.setChecked(False)
+        self._cheat_toggle.toggled.connect(self._on_cheat_toggle)
+        cl.addWidget(self._cheat_toggle)
+        self._cheat_widget = QWidget()
+        self._cheat_widget.setVisible(False)
+        cheat_l = QVBoxLayout(self._cheat_widget)
+        cheat_l.setContentsMargins(0, 0, 0, 0)
+        cheat_l.setSpacing(2)
+        self._populate_cheat_card(cheat_l)
+        cl.addWidget(self._cheat_widget)
+
+        # 折叠区 2:教程(默认折叠)
+        self._tutorial_toggle = QCheckBox("📚 教程")
+        self._tutorial_toggle.setChecked(False)
+        self._tutorial_toggle.toggled.connect(self._on_tutorial_toggle)
+        cl.addWidget(self._tutorial_toggle)
+        self._tutorial_widget = QWidget()
+        self._tutorial_widget.setVisible(False)
+        tut_l = QVBoxLayout(self._tutorial_widget)
+        tut_l.setContentsMargins(0, 0, 0, 0)
+        tut_l.setSpacing(4)
+        b_open_tut = QPushButton("打开 9-event 自检教程…")
+        b_open_tut.setObjectName("SecondaryButton")
+        b_open_tut.clicked.connect(self._on_tutorial_clicked)
+        tut_l.addWidget(b_open_tut)
+        tut_text = QLabel(
+            "📖 9 事件:左右手各 4 个指尖 + 双手互锁\n"
+            "💡 推荐顺序:先学一只手(例:左手食指),熟练后试互锁\n"
+            "🎯 任意 1 指尖碰拇指即触发;双手合扣需 2s 持续"
+        )
+        tut_text.setStyleSheet("color:rgba(255,255,255,180);font-size:11px;")
+        tut_text.setWordWrap(True)
+        tut_l.addWidget(tut_text)
+        cl.addWidget(self._tutorial_widget)
 
         return col
+
+    def _on_cheat_toggle(self, on: bool) -> None:
+        self._cheat_widget.setVisible(on)
+
+    def _on_tutorial_toggle(self, on: bool) -> None:
+        self._tutorial_widget.setVisible(on)
+
+    def _populate_cheat_card(self, layout: QVBoxLayout) -> None:
+        """填充手势速查表(从 cfg.tip_bindings 读当前动作)。"""
+        from ppt_core.hand_habits_storage import load_habits  # noqa
+        # 9 事件列表
+        all_tip_events = [
+            "L_HAND_INDEX", "L_HAND_MIDDLE", "L_HAND_RING", "L_HAND_PINKY",
+            "R_HAND_INDEX", "R_HAND_MIDDLE", "R_HAND_RING", "R_HAND_PINKY",
+            "HANDS_INTERLOCK",
+        ]
+        for gesture in all_tip_events:
+            row = QHBoxLayout()
+            row.setSpacing(6)
+            emoji = "👆" if "INDEX" in gesture else (
+                "☝" if "MIDDLE" in gesture else (
+                    "💍" if "RING" in gesture else (
+                        "🤙" if "PINKY" in gesture else "🤝"
+                    )
+                )
+            )
+            label = QLabel(f"{emoji} {gesture}")
+            label.setStyleSheet("color:#ffffff;font-size:11px;")
+            label.setMinimumWidth(160)
+            row.addWidget(label)
+            action = self._cfg.tip_bindings.get(gesture)
+            action_text = _ACTION_LABEL.get(action, "—") if action else "—"
+            a_lbl = QLabel(f"→ {action_text}")
+            a_lbl.setStyleSheet("color:#86efac;font-size:11px;")
+            row.addWidget(a_lbl)
+            row.addStretch(1)
+            layout.addLayout(row)
 
     def _build_right_column(self) -> QFrame:
         """Build the right column: mapping table + binding + trial + controls."""
@@ -450,22 +490,23 @@ class GesturePage(QWidget):
         self._history_lbl.setWordWrap(True)
         cl.addWidget(self._history_lbl)
 
-        # 控制按钮
+        # 控制按钮(启动/停止合并成切换按钮)
         ctrl = QHBoxLayout()
         ctrl.setSpacing(6)
-        # P2.1:教程入口
-        b_tutorial = QPushButton("教程")
-        b_tutorial.setObjectName("SecondaryButton")
-        b_tutorial.clicked.connect(self._on_tutorial_clicked)
-        ctrl.addWidget(b_tutorial)
-        b_start = QPushButton("启动手势")
-        b_start.setObjectName("PrimaryButton")
-        b_start.clicked.connect(lambda: self._bridge.start())
-        ctrl.addWidget(b_start)
-        b_stop = QPushButton("停止")
-        b_stop.setObjectName("SecondaryButton")
-        b_stop.clicked.connect(lambda: self._bridge.stop())
-        ctrl.addWidget(b_stop)
+        # 单按钮双状态:启动时显"停止",停止时显"启动"
+        self._toggle_btn = QPushButton("▶ 启动手势")
+        self._toggle_btn.setObjectName("PrimaryButton")
+        self._toggle_btn.setCheckable(True)
+        self._toggle_btn.setChecked(False)
+        self._toggle_btn.toggled.connect(self._on_toggle_engine)
+        ctrl.addWidget(self._toggle_btn)
+        # 启动时 engine 状态变化(由 _on_bridge_status 触发)— 单按钮状态自动同步
+        ctrl.addStretch(1)
+        b_default = QPushButton("恢复默认")
+        b_default.setObjectName("SecondaryButton")
+        b_default.clicked.connect(self._on_reset_defaults)
+        ctrl.addWidget(b_default)
+        b_export = QPushButton("导出配置")
         ctrl.addStretch(1)
         b_default = QPushButton("恢复默认")
         b_default.setObjectName("SecondaryButton")
@@ -651,17 +692,10 @@ class GesturePage(QWidget):
             self._status_light_prev_ss = new_ss
 
     def _update_diagnostics(self, snap):
+        """诊断信息直接写覆盖在视频上的 overlay 标签(不再用单独面板)。"""
         if snap is None or not snap.hands:
-            # 没有手:保留最后位置(snap is None)或显示「—」
-            if snap is None:
-                self._hand_xy_lbl.setText("手位置: —")
-                self._conf_lbl.setText("置信度: —")
-                self._slot_lbl.setText("Slot: —")
-            else:
-                # 之前看到了手现在没了:保留「—」
-                self._hand_xy_lbl.setText("手位置: —(手离开画面)")
-                self._conf_lbl.setText("置信度: —")
-                self._slot_lbl.setText("Slot: —")
+            self._overlay_status.setText("🟡 未识别到手")
+            self._overlay_hand.setText("手位置: —")
             # 清手指灯
             for key, (light, st) in self._finger_lights.items():
                 if self._finger_state_prev.get(key) is not None:
@@ -671,16 +705,49 @@ class GesturePage(QWidget):
                     self._finger_state_prev[key] = None
             return
 
-        # 有手:取置信度最高的一个(单人取 A,双人取置信度高的)
         hand = max(snap.hands, key=lambda h: h.confidence)
-        self._hand_xy_lbl.setText(f"手位置: ({hand.wrist_xy[0]:.2f}, {hand.wrist_xy[1]:.2f})")
-        self._conf_lbl.setText(f"置信度: {hand.confidence:.2f}")
-        self._slot_lbl.setText(f"Slot: {hand.slot}")
-        # 置信度颜色
+        # 左上 overlay:置信度+Slot
         threshold = float(self._cfg.sensitivity.get("low_confidence_threshold", 0.6))
         conf_color = "#22c55e" if hand.confidence >= threshold else "#f97316"
-        self._conf_lbl.setStyleSheet(f"color:{conf_color};font-size:11px;font-weight:600;")
-        # 手指灯(只在切换时更新)
+        self._overlay_status.setText(
+            f"🟢 置信 {hand.confidence:.2f} | Slot {hand.slot}"
+        )
+        self._overlay_status.setStyleSheet(
+            f"background:rgba(0,0,0,0.7);color:{conf_color};"
+            "padding:6px 10px;border-radius:4px;font-size:11px;"
+        )
+        self._overlay_status.adjustSize()
+        self._overlay_status.move(8, 8)
+        self._overlay_status.raise_()
+
+        # 底部 overlay:手位置
+        self._overlay_hand.setText(
+            f"手位置: ({hand.wrist_xy[0]:.2f}, {hand.wrist_xy[1]:.2f})"
+        )
+        self._overlay_hand.adjustSize()
+        container_w = self._video_container.width()
+        self._overlay_hand.move(
+            max(8, (container_w - self._overlay_hand.sizeHint().width()) // 2),
+            self._video_container.height() - self._overlay_hand.height() - 8,
+        )
+        self._overlay_hand.raise_()
+
+        # 右上 overlay:当前识别到的 gesture
+        active_g = hand.static_gesture
+        if active_g and active_g != "NONE":
+            self._overlay_gesture.setText(
+                f"{_GESTURE_META.get(active_g, ('', active_g))[0]} {active_g.replace('_', ' ')}"
+            )
+            self._overlay_gesture.adjustSize()
+            self._overlay_gesture.move(
+                self._video_container.width() - self._overlay_gesture.width() - 8, 8,
+            )
+            self._overlay_gesture.show()
+        else:
+            self._overlay_gesture.hide()
+        self._overlay_gesture.raise_()
+
+        # 手指状态变化(只在变化时更新,30fps × 5 灯 = 150 ops/秒)
         for key, (light, st) in self._finger_lights.items():
             cur = bool(hand.finger_states.get(key, False))
             prev = self._finger_state_prev.get(key)
@@ -694,25 +761,8 @@ class GesturePage(QWidget):
                     light.setStyleSheet("color:#6b7280;font-size:14px;")
                     st.setText("卷曲")
                 self._finger_state_prev[key] = cur
-        # 手势状态行
-        # kasi.txt [12]:之前每帧循环 7 个 label 都 setText + setStyleSheet,
-        # 即使 static_gesture 没变也全部重置。30fps × 7 × 2 = 420 次 UI 操作/秒。
-        # 改为只在变化时更新(用 prev 缓存当前 active label)。
-        active_g = hand.static_gesture
-        prev_active = getattr(self, "_diag_active_gesture", None)
-        if active_g != prev_active:
-            # 把旧 label 重置
-            if prev_active and prev_active in self._diag_gesture_labels:
-                old_lbl = self._diag_gesture_labels[prev_active]
-                old_lbl.setText("—")
-                old_lbl.setStyleSheet("color:rgba(255,255,255,140);font-size:11px;")
-            # 把新 label 高亮
-            if active_g in self._diag_gesture_labels:
-                new_lbl = self._diag_gesture_labels[active_g]
-                new_lbl.setText("✓ 识别中")
-                new_lbl.setStyleSheet("color:#22c55e;font-size:11px;font-weight:600;")
-            self._diag_active_gesture = active_g
         self._last_hand_seen_at = time.time()
+
 
     def _update_sync_highlight(self, snap):
         if snap is None or not snap.hands:
@@ -1007,6 +1057,34 @@ class GesturePage(QWidget):
 
     def _on_bridge_status(self, text: str) -> None:
         self._status_lbl.setText(text)
+        # 单按钮 toggle:根据 engine 状态文本同步按钮
+        if "运行" in text or "已识别" in text:
+            if not self._toggle_btn.isChecked():
+                self._toggle_btn.blockSignals(True)
+                self._toggle_btn.setChecked(True)
+                self._toggle_btn.setText("⏹ 停止")
+                self._toggle_btn.blockSignals(False)
+        elif "停止" in text or "未启动" in text:
+            if self._toggle_btn.isChecked():
+                self._toggle_btn.blockSignals(True)
+                self._toggle_btn.setChecked(False)
+                self._toggle_btn.setText("▶ 启动手势")
+                self._toggle_btn.blockSignals(False)
+
+    def _on_toggle_engine(self, checked: bool) -> None:
+        """切换按钮双状态:启动 / 停止。"""
+        if checked:
+            self._toggle_btn.setText("⏹ 停止")
+            try:
+                self._bridge.start()
+            except Exception as e:
+                print(f"[gesture_page] start failed: {e}")
+        else:
+            self._toggle_btn.setText("▶ 启动手势")
+            try:
+                self._bridge.stop()
+            except Exception as e:
+                print(f"[gesture_page] stop failed: {e}")
 
     def _on_bridge_fps(self, fps: float) -> None:
         prev = self._status_lbl.text()

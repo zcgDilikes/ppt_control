@@ -219,7 +219,12 @@
       "Bash(bash C:/Users/admin_gmail/.claude/plugins/cache/claude-plugins-official/superpowers/6.1.1/skills/subagent-driven-development/scripts/task-brief docs/superpowers/plans/2026-07-07-gesture-9events.md 1)",
       "Bash(bash C:/Users/admin_gmail/.claude/plugins/cache/claude-plugins-official/superpowers/6.1.1/skills/subagent-driven-development/scripts/task-brief docs/superpowers/plans/2026-07-07-gesture-9events.md 2)",
       "Bash(.venv/Scripts/python.exe -m pytest -q)",
-      "Bash(git stash *)"
+      "Bash(git stash *)",
+      "Bash(bash C:/Users/admin_gmail/.claude/plugins/cache/claude-plugins-official/superpowers/6.1.1/skills/subagent-driven-development/scripts/task-brief docs/superpowers/plans/2026-07-08-commercial-grade-polish.md 1)",
+      "Bash(pytest tests/test_hand_habits.py -v)",
+      "Bash(pytest tests/ -v --ignore=tests/test_hand_habits.py)",
+      "Bash(awk 'NR>=694 && NR<=820' ppt_qt/pages/gesture_page.py)",
+      "Bash(awk NR>=694 && NR<=755 *)"
     ]
   }
 }
