@@ -60,6 +60,7 @@ DEFAULT_GESTURE_CONFIG: Dict[str, Any] = {
     "mirror": True,
     "operator_mode": "single",          # "single" | "dual"
     "dual_roles_swapped": False,
+    "multi_person_mode": "off",         # "off" | "2_hand" | "3_hand_round_robin"
     "enabled": False,
     "camera_index": 0,
     "show_preview_window": True,

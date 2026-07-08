@@ -71,10 +71,11 @@ def _dist(ax: float, ay: float, bx: float, by: float) -> float:
 # ---------------------------------------------------------------------------
 @dataclass
 class HandState:
-    slot: str = ""                                   # "A" or "B"
+    slot: str = ""                                   # "A" | "B" | "C"
+    person_id: int = 0                               # 0=主手,1=副手,2=第三手(round-robin)
     last_seen_monotonic: float = 0.0
     # 9-event 字段
-    last_tip_gesture: str = "NONE"                   # L/R_HAND_INDEX|MIDDLE|RING|PINKY|NONE
+    last_tip_gesture: str = "NONE"                   # L/R/C_HAND_INDEX|MIDDLE|RING|PINKY|NONE
     tip_cooldown_until: float = 0.0                  # 9 事件独立冷却
     last_tip_ts: float = 0.0                          # Bug3:tip_touch 触发时刻(用于防误触 pinch)
     last_interlock_gesture: str = "NONE"             # slot A 上的 interlock 状态(单一)
@@ -97,9 +98,18 @@ class GestureSemantics:
     def __init__(self, cfg: GestureConfig):
         self.cfg = cfg
         self._slots: Dict[str, HandState] = {
-            "A": HandState(slot="A"),
-            "B": HandState(slot="B"),
+            "A": HandState(slot="A", person_id=0),
+            "B": HandState(slot="B", person_id=1),
         }
+        # 多手 / 3 人会议:当 multi_person_mode=3_hand_round_robin 时,
+        # 额外创建 slot C,person_id=2(MediaPipe 跟踪 ≤2,第 3 手由
+        # round-robin 帧切换由用户手动选 slot C 软处理)。
+        try:
+            multi_mode = str(cfg.raw.get("multi_person_mode", "off")).strip().lower()
+        except (AttributeError, TypeError):
+            multi_mode = "off"
+        if multi_mode == "3_hand_round_robin":
+            self._slots["C"] = HandState(slot="C", person_id=2)
         # Bug7:interlock 状态用 Lock 保护,避免 engine 线程 + 同步读 interlock_progress
         # 的多线程场景下 race condition
         self._interlock_lock = threading.Lock()
@@ -107,6 +117,8 @@ class GestureSemantics:
         self._interlock_start: Optional[float] = None
         # interlock 当前帧状态(NONE / HANDS_INTERLOCK),用于 rising-edge
         self._interlock_state: str = "NONE"
+        # round-robin 帧计数器:3 帧切换一次,active_extra slot C
+        self._rr_frame_counter: int = 0
         # 注:PairingService 已删(7 旧 gesture 路径不再需要 pairing POINTING_UP)
 
     # ------------------------------------------------------------------
@@ -201,7 +213,7 @@ class GestureSemantics:
            - 弯曲手指尖偶然在视觉上接近拇指根
 
         任意特征判弯曲则返回 NONE(就算距离够近也忽略)。
-        返回 8 个 L/R_HAND_* 事件之一或 "NONE"。
+        返回 L/R/C_HAND_* 事件之一或 "NONE"。
         """
         if not lm or len(lm) < 21:
             return "NONE"
@@ -212,7 +224,16 @@ class GestureSemantics:
         except (TypeError, ValueError):
             return "NONE"
         thumb_tip = lm[THUMB_TIP]
-        prefix = "L_HAND" if slot == "A" else "R_HAND"
+        # 槽位 → gesture 前缀映射:
+        #   A → L_HAND_*(主手/左)
+        #   B → R_HAND_*(副手/右)
+        #   C → C_HAND_*(第三手,3-hand 模式下)
+        if slot == "A":
+            prefix = "L_HAND"
+        elif slot == "B":
+            prefix = "R_HAND"
+        else:
+            prefix = "C_HAND"
         # 候选(目标 name / tip_idx / pip_idx / mcp_idx / dip_idx)
         candidates = [
             (f"{prefix}_INDEX",  INDEX_TIP,  INDEX_PIP,  INDEX_MCP,  INDEX_DIP),
@@ -344,6 +365,15 @@ class GestureSemantics:
         events: List[Dict[str, Any]] = []
         # 当前帧活跃的槽位集合
         active_slots = set()
+        # 多手模式:round-robin 帧计数(每 3 帧轮一次,slot C 在 1/3 帧上活跃)
+        try:
+            multi_mode = str(self.cfg.raw.get("multi_person_mode", "off")).strip().lower()
+        except (AttributeError, TypeError):
+            multi_mode = "off"
+        if multi_mode == "3_hand_round_robin":
+            self._rr_frame_counter = (self._rr_frame_counter + 1) % 3
+        else:
+            self._rr_frame_counter = 0
         # info.txt 五.2:低置信度手部(遮挡、远距离)仍走完整分类,造成算力浪费 + 误触。
         try:
             min_confidence = float(sens.get("low_confidence_threshold", 0.6))
@@ -371,6 +401,8 @@ class GestureSemantics:
                 st.last_seen_monotonic = now
                 active_slots.add(slot)
                 slot_lms[slot] = lm_list
+                # 多手模式:person_id 跟随 slot(A=0,B=1,C=2)
+                st.person_id = 0 if slot == "A" else (1 if slot == "B" else 2)
                 events.extend(self._process_one_hand(lm_list, slot, st, sens, now))
 
         # 没出现在本帧的槽位:清理与该手相关的瞬时状态
@@ -513,6 +545,7 @@ class GestureSemantics:
                     "type": "tip_touch",
                     "gesture": tip,
                     "slot": slot,
+                    "person_id": st.person_id,
                     "ts": ts, "ts_ms": ts_ms,
                     "source": f"gesture:{slot}",
                 })
