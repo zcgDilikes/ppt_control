@@ -28,6 +28,7 @@ pc_gesture.semantics
 from __future__ import annotations
 
 import math
+import threading
 import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -75,6 +76,7 @@ class HandState:
     # 9-event 字段
     last_tip_gesture: str = "NONE"                   # L/R_HAND_INDEX|MIDDLE|RING|PINKY|NONE
     tip_cooldown_until: float = 0.0                  # 9 事件独立冷却
+    last_tip_ts: float = 0.0                          # Bug3:tip_touch 触发时刻(用于防误触 pinch)
     last_interlock_gesture: str = "NONE"             # slot A 上的 interlock 状态(单一)
     interlock_cooldown_until: float = 0.0            # interlock 独立冷却
     # 捏合迟滞
@@ -98,6 +100,9 @@ class GestureSemantics:
             "A": HandState(slot="A"),
             "B": HandState(slot="B"),
         }
+        # Bug7:interlock 状态用 Lock 保护,避免 engine 线程 + 同步读 interlock_progress
+        # 的多线程场景下 race condition
+        self._interlock_lock = threading.Lock()
         # interlock cross-slot dwell timer(_detect_interlock 维护)
         self._interlock_start: Optional[float] = None
         # interlock 当前帧状态(NONE / HANDS_INTERLOCK),用于 rising-edge
@@ -208,22 +213,22 @@ class GestureSemantics:
             return "NONE"
         thumb_tip = lm[THUMB_TIP]
         prefix = "L_HAND" if slot == "A" else "R_HAND"
-        # 候选(目标索引 / 关节 / MCP),方案 C 需要 mcp/dip 用于角度
+        # 候选(目标 name / tip_idx / pip_idx / mcp_idx / dip_idx)
         candidates = [
-            (f"{prefix}_INDEX",  lm[INDEX_TIP],  INDEX_PIP,  INDEX_MCP,  INDEX_DIP),
-            (f"{prefix}_MIDDLE", lm[MIDDLE_TIP], MIDDLE_PIP, MIDDLE_MCP, MIDDLE_DIP),
-            (f"{prefix}_RING",   lm[RING_TIP],   RING_PIP,   RING_MCP,   RING_DIP),
-            (f"{prefix}_PINKY",  lm[PINKY_TIP],  PINKY_PIP,  PINKY_MCP,  PINKY_DIP),
+            (f"{prefix}_INDEX",  INDEX_TIP,  INDEX_PIP,  INDEX_MCP,  INDEX_DIP),
+            (f"{prefix}_MIDDLE", MIDDLE_TIP, MIDDLE_PIP, MIDDLE_MCP, MIDDLE_DIP),
+            (f"{prefix}_RING",   RING_TIP,   RING_PIP,   RING_MCP,   RING_DIP),
+            (f"{prefix}_PINKY",  PINKY_TIP,  PINKY_PIP,  PINKY_MCP,  PINKY_DIP),
         ]
         try:
             dists = [
-                (name, tip, pip_idx, mcp_idx, dip_idx,
-                 _dist(thumb_tip.x, thumb_tip.y, tip.x, tip.y) / size)
-                for name, tip, pip_idx, mcp_idx, dip_idx in candidates
+                (name, tip_idx, pip_idx, mcp_idx, dip_idx,
+                 _dist(thumb_tip.x, thumb_tip.y, lm[tip_idx].x, lm[tip_idx].y) / size)
+                for name, tip_idx, pip_idx, mcp_idx, dip_idx in candidates
             ]
         except (TypeError, AttributeError):
             return "NONE"
-        name, tip_pt, pip_idx, mcp_idx, dip_idx, d = min(dists, key=lambda x: x[5])
+        name, tip_idx, pip_idx, mcp_idx, dip_idx, d = min(dists, key=lambda x: x[5])
         if d >= threshold:
             return "NONE"
         # 方案 C:3 特征投票验证目标手指「伸直」
@@ -231,9 +236,8 @@ class GestureSemantics:
         thumb_extended = self._is_finger_extended_vote(
             lm, THUMB_TIP, THUMB_IP, THUMB_CMC, THUMB_MCP, size, sens,
         )
-        # pip_idx 既是 PIP 的 index,也是该指尖的 TIP index(简化)
         target_extended = self._is_finger_extended_vote(
-            lm, pip_idx, pip_idx, mcp_idx, dip_idx, size, sens,
+            lm, tip_idx, pip_idx, mcp_idx, dip_idx, size, sens,
         )
         if not (thumb_extended and target_extended):
             return "NONE"
@@ -250,7 +254,8 @@ class GestureSemantics:
         维护 self._interlock_start 实例属性(条件首次同时满足的时间)。
         """
         if not lm_a or not lm_b or len(lm_a) < 21 or len(lm_b) < 21:
-            self._interlock_start = None
+            with self._interlock_lock:
+                self._interlock_start = None
             return False
         try:
             sens = self.cfg.sensitivity
@@ -261,7 +266,8 @@ class GestureSemantics:
             return False
         wrist_d = _dist(lm_a[WRIST].x, lm_a[WRIST].y, lm_b[WRIST].x, lm_b[WRIST].y)
         if wrist_d > max_wrist:
-            self._interlock_start = None
+            with self._interlock_lock:
+                self._interlock_start = None
             return False
         tips_a = [lm_a[i] for i in (THUMB_TIP, INDEX_TIP, MIDDLE_TIP, RING_TIP, PINKY_TIP)]
         tips_b = [lm_b[i] for i in (THUMB_TIP, INDEX_TIP, MIDDLE_TIP, RING_TIP, PINKY_TIP)]
@@ -270,12 +276,14 @@ class GestureSemantics:
             for a in tips_a for b in tips_b
         ]
         if sum(cross) / len(cross) > max_tip:
-            self._interlock_start = None
+            with self._interlock_lock:
+                self._interlock_start = None
             return False
-        if self._interlock_start is None:
-            self._interlock_start = now
-            return False
-        return (now - self._interlock_start) >= dwell
+        with self._interlock_lock:
+            if self._interlock_start is None:
+                self._interlock_start = now
+            elapsed = now - self._interlock_start
+        return elapsed >= dwell
 
     def interlock_progress(self, now: float) -> float:
         """P0.2:返回当前 interlock 进度 0-1(用于 UI 进度条)。
@@ -284,13 +292,15 @@ class GestureSemantics:
         - < 1 表示在 dwell 中(UI 应显示进度条)
         - 1 表示完成,UI 可触发确认
         """
-        if self._interlock_start is None:
-            return 0.0
+        with self._interlock_lock:
+            if self._interlock_start is None:
+                return 0.0
+            start = self._interlock_start
         try:
             dwell = float(self.cfg.sensitivity.get("interlock_min_dwell_s", 2.0))
         except (TypeError, ValueError):
             dwell = 2.0
-        elapsed = now - self._interlock_start
+        elapsed = now - start
         return min(1.0, max(0.0, elapsed / dwell))
 
     # ------------------------------------------------------------------
@@ -304,13 +314,13 @@ class GestureSemantics:
         return "A" if small_is_left else "B"
 
     # ------------------------------------------------------------------
-    # 角色映射(7 旧 gesture 删除后,只剩 laser/pinch/tip-touch)
+    # 角色映射(7 旧 gesture 删除后,只剩 laser/pinch;tip-touch 路径无条件产)
     # ------------------------------------------------------------------
-    def _resolve_role_flags(self, is_single: bool, slot: str) -> tuple:
-        """返回 (produce_laser, produce_pinch):
+    def _laser_pinch_slot_flags(self, is_single: bool, slot: str) -> tuple:
+        """Bug4 改名:返回 (produce_laser, produce_pinch):
           - laser:  single + A | dual + B  (9-event 设计:指控手 B 槽)
           - pinch:  single + A | dual + B  (同样指控手 B 槽)
-          - tip-touch 路径无条件(每槽都产,无论 mode)
+          - tip-touch 路径无条件产(每槽都产,无论 mode)
         """
         produce_laser = (is_single and slot == "A") or (not is_single and slot == "B")
         produce_pinch = (is_single and slot == "A") or (not is_single and slot == "B")
@@ -420,7 +430,7 @@ class GestureSemantics:
         is_single = operator_mode == "single"
 
         # 角色映射(只剩 laser + pinch;tip-touch 路径无条件)
-        produce_laser, produce_pinch = self._resolve_role_flags(is_single, slot)
+        produce_laser, produce_pinch = self._laser_pinch_slot_flags(is_single, slot)
 
         # 统一时间戳字段
         ts = now
@@ -450,7 +460,14 @@ class GestureSemantics:
             st.laser_last_xy = None
 
         # ----- 2) 捏合 → 点击(迟滞防抖) -----
-        if produce_pinch:
+        # Bug3 fixed.txt B-4 回归:tip_touch 刚触发(200ms 内)不接 pinch,
+        # 防止翻页(拇指尖碰食指)同时误触发 MOUSE_CLICK。
+        try:
+            tip_grace_s = 0.2
+        except (TypeError, ValueError):
+            tip_grace_s = 0.2
+        in_tip_grace = (now - st.last_tip_ts) < tip_grace_s
+        if produce_pinch and not in_tip_grace:
             try:
                 pinch_th = float(sens.get("pinch_threshold", 0.32))
                 pinch_rel = float(sens.get("pinch_release", 0.45))
@@ -486,6 +503,9 @@ class GestureSemantics:
         except (TypeError, ValueError):
             cooldown_ms = 400
         tip = self._detect_tip_touches(lm, slot)
+        # Bug8:仅在 cooldown 真正放行时(条件全满足)才更新 last_tip_gesture。
+        # 否则 cooldown 期内同一手势重复触发会被认作「没变化」而漏报;
+        # 改成 cooldown 内的同 gesture 视作上次的(被 last_tip_gesture 卡住)。
         if tip and tip != st.last_tip_gesture:
             if now >= st.tip_cooldown_until and cooldown_ms > 0:
                 events.append({
@@ -497,7 +517,8 @@ class GestureSemantics:
                     "source": f"gesture:{slot}",
                 })
                 st.tip_cooldown_until = now + cooldown_ms / 1000.0
-        st.last_tip_gesture = tip
+                st.last_tip_ts = now  # Bug3:记录 tip 时刻,防误触 pinch
+                st.last_tip_gesture = tip
 
         return events
 

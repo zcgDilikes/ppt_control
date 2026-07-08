@@ -95,8 +95,9 @@ def _make_tip_hand(thumb_xy, target_tip_xy, wrist_xy=(0.3, 0.7)):
     """
     lm = [_P(0.0, 0.0) for _ in range(21)]
     lm[0] = _P(*wrist_xy)  # WRIST
-    for idx in (5, 9, 13, 17):  # MCP 全部相同
-        lm[idx] = _P(0.3, 0.5)
+    # Bug5:4 个 MCP 不应全部相同(真人手有间距),用线性递增
+    for idx, mcp_x in zip((5, 9, 13, 17), (0.3, 0.4, 0.5, 0.6)):
+        lm[idx] = _P(mcp_x, 0.5)
     # 4 个指尖位置
     lm[8] = _P(0.5, 0.2)   # INDEX_TIP
     lm[12] = _P(0.6, 0.2)  # MIDDLE_TIP
