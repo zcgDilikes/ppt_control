@@ -453,7 +453,11 @@ class GesturePage(QWidget):
         # 控制按钮
         ctrl = QHBoxLayout()
         ctrl.setSpacing(6)
-        # 7 旧 gesture 删除后,tutorial_dialog 已删,"重看教学"按钮移除
+        # P2.1:教程入口
+        b_tutorial = QPushButton("教程")
+        b_tutorial.setObjectName("SecondaryButton")
+        b_tutorial.clicked.connect(self._on_tutorial_clicked)
+        ctrl.addWidget(b_tutorial)
         b_start = QPushButton("启动手势")
         b_start.setObjectName("PrimaryButton")
         b_start.clicked.connect(lambda: self._bridge.start())
@@ -743,8 +747,7 @@ class GesturePage(QWidget):
         self._trial_now.setStyleSheet("color:#22c55e;font-size:14px;font-weight:600;")
 
     # ----- 私有：生命周期 -----
-    # 7 旧 gesture 删除后,tutorial_dialog 已删(9 事件无对应 7 步教学)。
-    # showEvent 保留给未来扩展。
+    # 7 旧 gesture 删除后,旧 tutorial_dialog 也已删。P2.1 新加 9-event 自检教程。
 
     # ----- 私有：业务逻辑(保持原样) -----
     def _on_teaching_toggled(self, on: bool) -> None:
@@ -756,6 +759,15 @@ class GesturePage(QWidget):
     # ----- 灵敏度 UI 回调 -----
     def _on_sens_expand_toggled(self, on: bool) -> None:
         self._sens_panel.setVisible(on)
+
+    def _on_tutorial_clicked(self) -> None:
+        """P2.1:打开 9-event 自检教程对话框。"""
+        from ppt_qt.pages.gesture_tutorial import GestureTutorialDialog
+        dlg = GestureTutorialDialog(cfg=self._cfg, parent=self)
+        if dlg.exec() == 1 and dlg.is_all_completed():
+            self._status_lbl.setText("教程完成:9-event 全部勾选 ✓")
+        else:
+            self._status_lbl.setText("教程退出")
 
     def _on_mapping_table_toggle(self, on: bool) -> None:
         self._mapping_table.setVisible(on)
