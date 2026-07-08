@@ -9,7 +9,7 @@ from typing import Optional, List, Dict
 from PySide6.QtCore import Qt, QTimer, Slot
 from PySide6.QtGui import QPixmap, QImage
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
+    QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel, QPushButton,
     QComboBox, QCheckBox, QFileDialog, QMessageBox, QFrame,
     QSpinBox, QDoubleSpinBox,
 )
@@ -342,12 +342,28 @@ class GesturePage(QWidget):
         return col
 
     def _build_right_column(self) -> QFrame:
-        """Build the right column: binding + trial + controls (no cheat card)."""
+        """Build the right column: mapping table + binding + trial + controls."""
         col = QFrame()
         col.setObjectName("GlassCard")
         cl = QVBoxLayout(col)
         cl.setContentsMargins(12, 12, 12, 12)
         cl.setSpacing(8)
+
+        # P1.1:9-event 手势-动作对照表(紧凑,2 列)
+        # 比之前 cheat card 信息密度高,只显示 emoji+动作,藏到可折叠区
+        table_title = QLabel("📖 手势速查")
+        table_title.setStyleSheet("color:#ffffff;font-size:13px;font-weight:600;")
+        cl.addWidget(table_title)
+        self._mapping_table_toggle = QCheckBox("显示对照表")
+        self._mapping_table_toggle.setChecked(True)  # 默认展开
+        self._mapping_table_toggle.toggled.connect(self._on_mapping_table_toggle)
+        cl.addWidget(self._mapping_table_toggle)
+        self._mapping_table = QWidget()
+        self._mapping_table_layout = QGridLayout(self._mapping_table)
+        self._mapping_table_layout.setContentsMargins(0, 0, 0, 0)
+        self._mapping_table_layout.setSpacing(4)
+        cl.addWidget(self._mapping_table)
+        self._populate_mapping_table()
 
         # ① 手势映射(去掉原 cheat card,节省页面空间)
         title1 = QLabel("① 手势映射")
@@ -740,6 +756,68 @@ class GesturePage(QWidget):
     # ----- 灵敏度 UI 回调 -----
     def _on_sens_expand_toggled(self, on: bool) -> None:
         self._sens_panel.setVisible(on)
+
+    def _on_mapping_table_toggle(self, on: bool) -> None:
+        self._mapping_table.setVisible(on)
+
+    def _populate_mapping_table(self) -> None:
+        """P1.1:填充 9-event 手势-动作对照表。
+
+        2 列布局:左 emoji + 中文名,右当前动作。
+        互锁手势单独一行,用黄色突出(danger zone)。
+        """
+        from pc_gesture.config import DEFAULT_TIP_BINDINGS, ACTIONS
+        # emoji + 中文名(hardcoded,稳定)
+        desc_map = {
+            "L_HAND_INDEX":     "👆 左手拇指触食指",
+            "L_HAND_MIDDLE":    "☝ 左手拇指触中指",
+            "L_HAND_RING":      "💍 左手拇指触无名指",
+            "L_HAND_PINKY":     "🤙 左手拇指触小拇指",
+            "R_HAND_INDEX":     "👆 右手拇指触食指",
+            "R_HAND_MIDDLE":    "🖕 右手拇指触中指",
+            "R_HAND_RING":      "💍 右手拇指触无名指",
+            "R_HAND_PINKY":     "🤙 右手拇指触小拇指",
+            "HANDS_INTERLOCK":  "🤝 双手十指相扣(2s dwell)",
+        }
+        action_labels = {
+            "NEXT_PAGE":     "下一页",
+            "PREV_PAGE":     "上一页",
+            "FULL_SCREEN":   "从头放映",
+            "FROM_CURRENT":  "从当前放映",
+            "BLACK_SCREEN":  "黑屏",
+            "WHITE_SCREEN":  "白屏",
+            "EXIT":          "退出放映",
+            "SCREENSHOT":    "截屏",
+            "OPEN_PPT":      "打开PPT",
+            "PC_WINDOW_MINIMIZE": "PC最小化",
+            "PC_WINDOW_RESTORE":  "PC恢复",
+        }
+        gestures = [
+            "L_HAND_INDEX", "L_HAND_MIDDLE", "L_HAND_RING", "L_HAND_PINKY",
+            "R_HAND_INDEX", "R_HAND_MIDDLE", "R_HAND_RING", "R_HAND_PINKY",
+            "HANDS_INTERLOCK",
+        ]
+        # 2 列 grid
+        for idx, g in enumerate(gestures):
+            is_danger = (g == "HANDS_INTERLOCK")
+            lbl = QLabel(desc_map.get(g, g))
+            lbl.setStyleSheet(
+                "color:%s;font-size:11px;" % ("#fde68a" if is_danger else "rgba(255,255,255,200)")
+            )
+            # 优先从 cfg.tip_bindings 读,否则用默认
+            if hasattr(self._cfg, "tip_bindings") and self._cfg.tip_bindings:
+                action = self._cfg.tip_bindings.get(g) or DEFAULT_TIP_BINDINGS.get(g)
+            else:
+                action = DEFAULT_TIP_BINDINGS.get(g)
+            action_lbl = QLabel(action_labels.get(action, "—") if action else "—")
+            action_lbl.setStyleSheet(
+                "color:%s;font-size:11px;font-weight:600;"
+                % ("#fbbf24" if is_danger else "#86efac")
+            )
+            row = idx // 2
+            col_pair = idx % 2
+            self._mapping_table_layout.addWidget(lbl, row, col_pair * 2)
+            self._mapping_table_layout.addWidget(action_lbl, row, col_pair * 2 + 1)
 
     def _on_sens_changed(self, key: str, value) -> None:
         """spinbox 变化时把值写回 cfg,持久化到磁盘。"""

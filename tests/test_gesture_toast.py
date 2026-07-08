@@ -59,3 +59,47 @@ def test_toast_positioning(monkeypatch):
     assert geo.x() + geo.width() > 0
     # y 在父下方 65% 左右
     assert geo.y() > 600 * 0.5
+
+
+# ---- P1.1: 手势-动作对照表 ----
+
+def test_mapping_table_default_expanded(monkeypatch):
+    """P1.1:对照表默认展开,填 9 行 + HANDS_INTERLOCK。"""
+    page = _make_page(monkeypatch)
+    assert page._mapping_table.isVisibleTo(page) is True
+    # 9 个手势(8 tip + 1 interlock)按 2 列布局 → 5 行
+    assert page._mapping_table_layout.rowCount() == 5
+    # 9 个描述 label + 9 个动作 label
+    assert page._mapping_table_layout.count() == 18
+
+
+def test_mapping_table_can_be_collapsed(monkeypatch):
+    """checkbox 可隐藏/显示对照表。"""
+    page = _make_page(monkeypatch)
+    page._mapping_table_toggle.setChecked(False)
+    assert page._mapping_table.isVisibleTo(page) is False
+    page._mapping_table_toggle.setChecked(True)
+    assert page._mapping_table.isVisibleTo(page) is True
+
+
+def test_mapping_table_reflects_user_bindings(monkeypatch):
+    """对照表的动作 label 反映 cfg.tip_bindings 当前值。"""
+    from unittest.mock import MagicMock
+    from pc_gesture.config import load_gesture_config
+    cfg = load_gesture_config()
+    bridge = MagicMock()
+    bridge.cfg = cfg
+    from ppt_qt.pages.gesture_page import GesturePage
+    # 直接修改 property(不是 raw 快照),page 看到的绑定
+    cfg.tip_bindings["L_HAND_INDEX"] = "PREV_PAGE"
+    page = GesturePage(bridge=bridge)
+    # 找 L_HAND_INDEX 描述 label 的位置 → 同行下一个 widget 是 action
+    lbl_count = page._mapping_table_layout.count()
+    for i in range(lbl_count - 1):
+        widget = page._mapping_table_layout.itemAt(i).widget()
+        if widget and "左手拇指触食指" in widget.text():
+            action_lbl = page._mapping_table_layout.itemAt(i + 1).widget()
+            assert action_lbl.text() == "上一页", \
+                f"expected '上一页' got '{action_lbl.text()}'"
+            return
+    raise AssertionError("L_HAND_INDEX row not found in mapping table")
