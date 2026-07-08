@@ -5,7 +5,7 @@ import subprocess
 import sys
 import json
 from PySide6.QtWidgets import QApplication, QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QStackedWidget, QSystemTrayIcon, QMenu, QMessageBox
-from PySide6.QtCore import Qt, QSize
+from PySide6.QtCore import Qt, QSize, QTimer, QObject, Signal
 from PySide6.QtGui import QAction, QIcon, QPainter, QColor, QPixmap
 
 from ppt_core.settings import DEFAULT_SETTINGS, load_settings, save_settings
@@ -28,8 +28,13 @@ SERVER_BASE = "https://ppt.dilikes.com"
 PPT_PC_WS_SUBPATH = "ws/python"
 
 
-class PptQtApp:
+class PptQtApp(QObject):
+    # Emitted when the async core load finishes (Phase 2 done). UI may
+    # safely wire up gesture / capture pipelines once this fires.
+    core_ready = Signal()
+
     def __init__(self):
+        super().__init__()
         self._settings = load_settings()
         self._room_id = load_or_create_room_id()
 
@@ -94,6 +99,39 @@ class PptQtApp:
         self._notes.start()
 
         self._setup_tray()
+
+        # Phase 2: async-load heavy modules (cv2/mediapipe/bridge) so
+        # the main window can render under 200ms without waiting for
+        # MediaPipe's slow first import.
+        QTimer.singleShot(0, self._async_load_core)
+
+    def _async_load_core(self):
+        """后台线程加载 cv2 / mediapipe / bridge(防 import 阻塞首启)。
+
+        Stub for Task 4 — just verifies imports succeed and emits
+        ``core_ready``. Phase 5 will replace the body with the real
+        engine + camera bootstrap.
+        """
+        try:
+            import cv2  # noqa: F401
+            from mediapipe.tasks import python  # noqa: F401
+            from mediapipe.tasks.python import vision  # noqa: F401
+            self.core_ready.emit()
+        except Exception as e:
+            self._safe_status(f"初始化失败:{e}")
+
+    def _safe_status(self, text: str) -> None:
+        """Update the status pill if the UI is up; swallow errors otherwise.
+
+        Used during async core load when the main window may not be
+        fully realised yet.
+        """
+        try:
+            pill = getattr(self, "_status_pill", None)
+            if pill is not None:
+                pill.set_status(text)
+        except Exception:
+            pass
 
     def _build_main_window(self):
         self._win = QMainWindow()
