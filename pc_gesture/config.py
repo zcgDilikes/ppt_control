@@ -94,9 +94,6 @@ DEFAULT_GESTURE_CONFIG: Dict[str, Any] = {
         "ext_relaxed_y": 0.015,
         # 手指卷曲 Y 偏移(归一化)。tip.y > pip.y + 此值 视为卷曲
         "curl_y": 0.005,
-        # 手势持续 NONE 超过此秒数,auto-reset last_static_gesture
-        # (允许同一手势再次触发,无需切换到别的手势)
-        "static_reset_idle_s": 0.3,
         # 手部消失超过此秒数,清理 slot 瞬时状态(冷却、最后手势、激光历史)
         "hand_lost_cleanup_s": 0.5,
         # 配对判定:某 slot pointing_up 持续此秒数即认为配对成功

@@ -329,14 +329,11 @@ class GestureEngine:
         """Assemble a FrameSnapshot from one frame's worth of MediaPipe results.
 
         The snapshot is immutable; the engine creates a new one per frame.
-        finger_states are derived from the same heuristics used by
-        ``self._semantics._classify_static`` so diagnostics stay in sync with
-        what the recognizer actually sees.
+        7 旧 gesture 已删,static_gesture 字段固定为 "NONE"(trial 面板靠
+        recent_gestures() 9 事件通道显示识别结果,不用 HandSnapshot)。
 
         kasi.txt [9]:1080p@30fps 时 frame_rgb 持续 186MB/s 内存分配 + 拷贝。
         没有 on_frame 消费者时,frame_rgb 设 None,只算 hand landmarks(几 KB)。
-        kasi.txt [20]:static_gesture 之前每帧重调 _classify_static,与 process()
-        重复算。改读 process() 已写入 HandState.last_static_gesture。
         """
         h, w = frame.shape[:2]
         # kasi.txt [9]:仅在有消费者时分配 frame_rgb;否则 frame_rgb=None 节省
@@ -355,9 +352,8 @@ class GestureEngine:
         is_single = self.cfg.operator_mode == "single"
         swapped = self.cfg.dual_roles_swapped
 
-        # kasi.txt [20]:复用 process() 已计算的 per-slot last_static_gesture,
-        # 不再每帧重调 _classify_static。
-        current_gestures = self._semantics.current_gestures()
+        # 7 旧 gesture 已删,static 字段只保留 "NONE" 占位
+        # (trial 面板靠 recent_gestures 看 9 事件,HandSnapshot.static_gesture 总是 NONE)
 
         hands: List[HandSnapshot] = []
         for idx, lm_list in enumerate(hand_landmarks or []):
@@ -372,7 +368,7 @@ class GestureEngine:
             # 单人模式只看 A
             if is_single and slot != "A":
                 continue
-            # 手指状态(来自 semantics._classify_static 的同套判定)
+            # 手指状态(用于诊断显示)
             index_ext = lm_list[8].y < lm_list[6].y - 0.025
             middle_ext = lm_list[12].y < lm_list[10].y - 0.025
             ring_ext = lm_list[16].y < lm_list[14].y - 0.025
@@ -381,8 +377,8 @@ class GestureEngine:
             wrist_y = lm_list[0].y
             thumb_up = thumb_tip_y < wrist_y - 0.08
             thumb_down = thumb_tip_y > wrist_y + 0.10
-            # kasi.txt [20]:从 process() 的结果读,不再重算
-            static = current_gestures.get(slot, "NONE")
+            # 7 旧 gesture 已删,static 固定 NONE
+            static = "NONE"
             # confidence 来自 MediaPipe handedness
             try:
                 conf = float(handedness[idx][0].score) if handedness and idx < len(handedness) else 0.0
