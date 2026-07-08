@@ -147,6 +147,52 @@ class GesturePage(QWidget):
         # ---- 9-event: 构造完成后立即应用 operator_mode 状态(单/双人) ----
         self._refresh_tip_combos_enabled()
 
+        # ---- 浮动 toast 反馈(每次手势触发时短暂显示) ----
+        # 作为 self 的子 widget 而不是 layout 项,不会影响 column reflow
+        self._toast = QLabel(self)
+        self._toast.setAlignment(Qt.AlignCenter)
+        self._toast.setStyleSheet(
+            "background:rgba(34,197,94,0.92);color:#ffffff;"
+            "font-size:20px;font-weight:600;padding:14px 28px;"
+            "border-radius:12px;"
+        )
+        self._toast.setVisible(False)
+        self._toast.setMinimumWidth(280)
+        self._toast.setAttribute(Qt.WA_TransparentForMouseEvents)
+        self._toast_timer = QTimer(self)
+        self._toast_timer.setSingleShot(True)
+        self._toast_timer.timeout.connect(self._toast.hide)
+        # resizeEvent 重定位 toast(浮动在父 widget 中下方)
+        self.resizeEvent = self._make_resize_event(self.resizeEvent)
+
+    def _make_resize_event(self, original):
+        def _on_resize(event):
+            if original is not None:
+                original(event)
+            self._reposition_toast()
+        return _on_resize
+
+    def _reposition_toast(self) -> None:
+        if not hasattr(self, "_toast"):
+            return
+        # 浮动在父 widget 下方居中
+        w = self._toast.sizeHint().width()
+        h = self._toast.sizeHint().height()
+        x = (self.width() - w) // 2
+        y = int(self.height() * 0.65)
+        self._toast.setGeometry(x, y, w, h)
+
+    def _show_toast(self, text: str, duration_ms: int = 1500) -> None:
+        """P0.1:显示大字号 toast 反馈手势触发。"""
+        if not hasattr(self, "_toast"):
+            return
+        self._toast.setText(text)
+        self._toast.adjustSize()
+        self._reposition_toast()
+        self._toast.raise_()
+        self._toast.show()
+        self._toast_timer.start(duration_ms)
+
     # ----- 私有：构建左右两栏 -----
     def _build_left_column(self) -> QFrame:
         """Build the left column: embedded preview + status light + diagnostic panel."""
@@ -840,6 +886,14 @@ class GesturePage(QWidget):
                     2000,
                     lambda g=gesture: self._binding_rows[g].setStyleSheet("")
                 )
+            # P0.1:大字号 toast 反馈(显示动作名)
+            action_name = _ACTION_LABEL.get(action, "") if action else ""
+            emoji, name = _GESTURE_META.get(gesture, ("", gesture))
+            if action_name:
+                toast_text = f"{emoji}  {name}  →  {action_name}"
+            else:
+                toast_text = f"{emoji}  {name}"
+            self._show_toast(toast_text, duration_ms=1500)
         lines = []
         for h in self._history:
             t = time.strftime("%H:%M:%S", time.localtime(float(h.get("ts") or 0.0)))
