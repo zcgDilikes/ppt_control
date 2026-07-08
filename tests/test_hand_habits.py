@@ -51,7 +51,8 @@ def test_analyzer_filters_old_actions():
 
 def test_save_load_roundtrip():
     with tempfile.TemporaryDirectory() as tmp:
-        actions = [("NEXT_PAGE", 1709452800.0), ("BLACK_SCREEN", 1709456400.0)]
+        now = time.time()
+        actions = [("NEXT_PAGE", now - 10), ("BLACK_SCREEN", now - 5)]
         save_habits(tmp, actions)
         loaded = load_habits(tmp)
         assert loaded == actions
