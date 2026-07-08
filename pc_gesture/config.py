@@ -19,27 +19,15 @@ from typing import Any, Dict, Optional
 # ---------------------------------------------------------------------------
 # 手势/动作枚举 + 默认映射
 # ---------------------------------------------------------------------------
-GESTURES = (
-    "OK", "L_SIGN", "THREE_FINGERS", "POINTING_UP", "SCISSORS", "FIST", "PALM",
-)
 ACTIONS = (
     "NEXT_PAGE", "PREV_PAGE", "FULL_SCREEN", "FROM_CURRENT",
     "BLACK_SCREEN", "WHITE_SCREEN", "EXIT",
     "SCREENSHOT", "OPEN_PPT",
     "PC_WINDOW_MINIMIZE", "PC_WINDOW_RESTORE",
 )
-DEFAULT_BINDINGS: Dict[str, Optional[str]] = {
-    "OK":             "NEXT_PAGE",     # 下一页
-    "SCISSORS":       "PREV_PAGE",     # 上一页(剪刀手)
-    "FIST":           "BLACK_SCREEN",  # 黑屏(拳头)
-    "PALM":           "EXIT",          # 退出放映(张掌)
-    "THREE_FINGERS":  "WHITE_SCREEN",  # 白屏(三指)
-    "L_SIGN":         "FULL_SCREEN",   # 从头放映(L 手势)
-    "POINTING_UP":    None,            # 激光:走 rising-edge 持续发射,不走 bindings
-}
 
-# 9 个 tip-touch 事件(单手 × 4 指尖 × 2 + 双手 interlock)
-# 见 docs/superpowers/specs/2026-07-07-gesture-9events-design.md
+# 9 个事件(单手 × 4 指尖 × 2 + 双手 interlock)
+# 7 旧 gesture(OK / L_SIGN / THREE_FINGERS / POINTING_UP / SCISSORS / FIST / PALM)已全删
 TIP_GESTURES = (
     "L_HAND_INDEX", "L_HAND_MIDDLE", "L_HAND_RING", "L_HAND_PINKY",
     "R_HAND_INDEX", "R_HAND_MIDDLE", "R_HAND_RING", "R_HAND_PINKY",
@@ -58,10 +46,10 @@ DEFAULT_TIP_BINDINGS: Dict[str, Optional[str]] = {
     "HANDS_INTERLOCK":  "OPEN_PPT",
 }
 
-# 旧 enum 字符串,用于迁移检测(代码层不再使用)
-_DEPRECATED_GESTURES = (
-    "THUMBS_UP", "THUMBS_DOWN", "SWIPE_LEFT", "SWIPE_RIGHT",
-)
+# Backward-compat shims: 7 旧 gesture 路径已删,但部分测试 / 旧代码可能仍引用
+# 这些符号。给个空 stub 让 import 不报错。
+GESTURES = ()
+DEFAULT_BINDINGS: Dict[str, Optional[str]] = {}
 
 
 # ---------------------------------------------------------------------------
@@ -145,32 +133,16 @@ GESTURE_CONFIG_PATH = os.path.join(PROJECT_DIR, "ppt_pc_client_gesture.json")
 # ---------------------------------------------------------------------------
 @dataclass
 class GestureConfig:
-    """顶层属性与 raw['...'] 双向同步；UI 既可 ``gcfg.preview_only`` 也可 ``cfg.raw['preview_only']``。"""
+    """顶层属性与 raw['...'] 双向同步；UI 既可 ``gcfg.preview_only`` 也可 ``cfg.raw['preview_only']``。
+
+    7 旧 gesture 全删,只保留 9 个新事件的 tip_bindings。
+    """
 
     raw: Dict[str, Any] = field(default_factory=dict)
-    bindings: Dict[str, Optional[str]] = field(default_factory=dict)
     tip_bindings: Dict[str, Optional[str]] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        # 从 raw['bindings'] 同步到实例属性（_merge_defaults 已合并默认值）
-        # 注意：保留 raw 中未知 key（如旧 enum 字符串），由 migrate_old_bindings 清理
-        raw_bindings = self.raw.get("bindings") if isinstance(self.raw, dict) else None
-        merged: Dict[str, Optional[str]] = dict(DEFAULT_BINDINGS)
-        if isinstance(raw_bindings, dict):
-            for g in GESTURES:
-                if g in raw_bindings:
-                    v = raw_bindings[g]
-                    merged[g] = v if (v is None or v in ACTIONS) else None
-        self.bindings = merged
-        # 反向同步到 raw：保留未知键（旧 enum）以供 migrate_old_bindings 检测
-        if isinstance(self.raw, dict):
-            out = dict(self.bindings)
-            if isinstance(raw_bindings, dict):
-                for k, v in raw_bindings.items():
-                    if k not in out:
-                        out[k] = v
-            self.raw["bindings"] = out
-        # tip_bindings 同步(类似 bindings,缺失键用默认填)
+        # tip_bindings 同步(缺失键用默认填)
         raw_tip = self.raw.get("tip_bindings") if isinstance(self.raw, dict) else None
         merged_tip: Dict[str, Optional[str]] = dict(DEFAULT_TIP_BINDINGS)
         if isinstance(raw_tip, dict):
@@ -181,6 +153,9 @@ class GestureConfig:
         self.tip_bindings = merged_tip
         if isinstance(self.raw, dict):
             self.raw["tip_bindings"] = dict(self.tip_bindings)
+        # 兼容旧 config:丢弃旧 bindings 字段(7 gesture 已删)
+        if isinstance(self.raw, dict) and "bindings" in self.raw:
+            self.raw.pop("bindings", None)
 
     # ----- preview_only -----
     @property
@@ -267,50 +242,10 @@ class GestureConfig:
         return self.tip_bindings.get(gesture)
 
     def reset_bindings(self) -> None:
-        self.bindings = dict(DEFAULT_BINDINGS)
+        """重置 tip_bindings 为默认(7 旧 gesture 的 reset_bindings 已删)"""
+        self.tip_bindings = dict(DEFAULT_TIP_BINDINGS)
         if isinstance(self.raw, dict):
-            self.raw["bindings"] = dict(self.bindings)
-
-    def export_dict(self) -> dict:
-        return dict(self.bindings)
-
-    def import_dict(self, data: dict) -> None:
-        if not isinstance(data, dict):
-            return
-        new_bindings: Dict[str, Optional[str]] = {}
-        for g in GESTURES:
-            if g in data:
-                v = data[g]
-                new_bindings[g] = v if (v is None or v in ACTIONS) else None
-            else:
-                new_bindings[g] = DEFAULT_BINDINGS.get(g)
-        self.bindings = new_bindings
-        if isinstance(self.raw, dict):
-            self.raw["bindings"] = dict(self.bindings)
-
-    # ----- 旧手势迁移 -----
-    def migrate_old_bindings(self) -> bool:
-        """移除 raw['bindings'] 里的旧 enum 键(THUMBS_UP/DOWN, SWIPE_*),
-        并将 tutorial_done 重置为 False。
-
-        返回 True 表示发生了迁移(供上层推 UI 状态消息)。
-        FIST / PALM / POINTING_UP 三个保留 enum 键不动。
-        """
-        bindings = self.raw.get("bindings") if isinstance(self.raw, dict) else None
-        if not isinstance(bindings, dict):
-            return False
-        deprecated = set(_DEPRECATED_GESTURES)
-        changed = any(k in bindings for k in deprecated)
-        if not changed:
-            return False
-        for k in deprecated:
-            bindings.pop(k, None)
-        # 反向同步。error.txt [34]:等价于 `if k in GESTURES`(`self.bindings` 初始值已包含全部 GESTURES)
-        self.bindings = {k: v for k, v in bindings.items() if k in GESTURES}
-        self.raw["bindings"] = dict(self.bindings)
-        # 强制重置教学标志
-        self.tutorial_done = False
-        return True
+            self.raw["tip_bindings"] = dict(self.tip_bindings)
 
 
 def _merge_defaults(raw: dict) -> dict:

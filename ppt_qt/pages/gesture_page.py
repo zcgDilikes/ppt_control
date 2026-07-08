@@ -746,21 +746,19 @@ class GesturePage(QWidget):
         self._status_lbl.setText(f"已更新 {gesture} -> {action or '禁用'}")
 
     def _refresh_tip_combos_enabled(self) -> None:
-        """dual mode off → 9 个 tip combo 禁用 + tooltip 提示。"""
-        enabled = (self._cfg.operator_mode == "dual")
-        tip = "需切到「双人模式」才能使用" if not enabled else ""
+        """9 个 tip combo 总 enable(7 旧 gesture 删除后,9 事件支持单/双人模式)。"""
         for cb in self._tip_combos:
-            cb.setEnabled(enabled)
-            cb.setToolTip(tip)
+            cb.setEnabled(True)
+            cb.setToolTip("")
 
     def _refresh_query_hint(self) -> None:
         sel = self._query_combo.currentData()
         if sel is None:
-            used = {g for g, a in self._cfg.bindings.items() if a}
-            free = [g for g in GESTURES if g not in used]
-            self._query_hint.setText("未绑定: " + ", ".join(f"{_GESTURE_NAME[g]}({g})" for g in free) or "（全部已绑定）")
+            used = {g for g, a in self._cfg.tip_bindings.items() if a}
+            free = [g for g in TIP_GESTURES if g not in used]
+            self._query_hint.setText("未绑定: " + ", ".join(f"{_TIP_GESTURE_META.get(g, ('', g))[1]}({g})" for g in free) or "（全部已绑定）")
         else:
-            bound = [g for g in GESTURES if self._cfg.get_binding(g) == sel]
+            bound = [g for g in TIP_GESTURES if self._cfg.get_tip_binding(g) == sel]
             if bound:
                 self._query_hint.setText("绑定该动作: " + ", ".join(f"{_GESTURE_NAME[g]}({g})" for g in bound))
             else:

@@ -97,15 +97,7 @@ class GestureBridge(QObject):
 
     def _ensure(self) -> GestureEngine:
         if self._engine is None:
-            # 首次启动：检测并迁移旧 bindings(THUMBS_UP/DOWN, SWIPE_*)
-            migrated = self._cfg.migrate_old_bindings()
-            if migrated:
-                try:
-                    self._on_status(
-                        "手势集已更新：7 个旧手势已被替换，新绑定请重新设置。"
-                    )
-                except Exception:
-                    pass
+            # 7 旧 gesture 已删,无迁移逻辑
             self._engine = GestureEngine(
                 dispatch_fn=self._on_gesture_event,
                 on_status=self._on_status,
@@ -117,35 +109,23 @@ class GestureBridge(QObject):
     def _on_gesture_event(self, ev: dict, source: str = "gesture") -> None:
         """Engine raw gesture event entry: filter + binding lookup + dispatch.
 
-        9-events spec 2026-07-07:
-          type="gesture"   → 7 旧 gesture 走 cfg.bindings
+        7 旧 gesture 删除后,只支持 9 个新事件:
           type="tip_touch" → 8 单手事件走 cfg.tip_bindings
           type="interlock" → HANDS_INTERLOCK 走 cfg.tip_bindings
-          type="gesture_end" → 仅记录,不入 dispatch
+          旧 type="gesture"/"gesture_end" silently drop(向后兼容)
         """
         if not isinstance(ev, dict):
             return
         ev_type = ev.get("type")
-        # gesture_end 不入 dispatch
-        if ev_type == "gesture_end":
+        # 7 旧 gesture 事件:忽略(7 gesture 已删,但 engine 仍可能发 type=gesture,
+        # 例如教程流回放,这里 silently drop)
+        if ev_type in ("gesture", "gesture_end"):
             return
-        # type 不在已知集合 → 忽略
-        if ev_type not in ("gesture", "tip_touch", "interlock"):
+        if ev_type not in ("tip_touch", "interlock"):
             return
         gesture = ev.get("gesture")
-        slot = ev.get("slot", "A")
-        # kasi.txt [36]:debug_log 默认 False,热路径只读一次
         debug = bool(self._cfg.sensitivity.get("debug_log", False))
-        # 9-events: tip_touch / interlock 不受 slot=="A" 限制(双槽都可触发)
-        if ev_type == "gesture" and slot != "A":
-            if debug:
-                print(f"[bridge] ignored slot={slot} gesture={gesture} (only slot A fires)")
-            return
-        # 9-events: 选 binding 来源
-        if ev_type in ("tip_touch", "interlock"):
-            action = self._cfg.get_tip_binding(gesture)
-        else:
-            action = self._cfg.get_binding(gesture)
+        action = self._cfg.get_tip_binding(gesture)
         # Always record
         self._record_recognized_gesture(gesture, action, ev, source)
         if self._teaching_mode:
@@ -205,35 +185,22 @@ class GestureBridge(QObject):
     def save(self) -> None:
         """Persist the bridge-owned config to disk.
 
-        The bridge is the source of truth for ``bindings`` and
-        ``tip_bindings`` (UI mutates ``self._cfg``). When the engine exists
-        we mirror our bindings into ``engine.cfg`` BEFORE
-        ``engine.save_config()`` runs so the on-disk file reflects UI
-        changes. When the engine has not yet been constructed, we save our
-        own cfg directly so UI mutations made before the user clicks
-        "Start gesture" still persist.
+        7 旧 gesture 删除后,bridge 只 source of truth for ``tip_bindings``
+        (UI mutates ``self._cfg``). When the engine exists we mirror our
+        tip_bindings into ``engine.cfg`` BEFORE ``engine.save_config()``
+        runs so the on-disk file reflects UI changes. When the engine
+        has not yet been constructed, we save our own cfg directly.
         """
-        # Ensure the in-memory cfg's raw view matches our bindings.
+        # Ensure the in-memory cfg's raw view matches our tip_bindings.
         if isinstance(self._cfg.raw, dict):
-            self._cfg.raw["bindings"] = dict(self._cfg.bindings)
-            # 9-events: also mirror tip_bindings so UI combo-box edits persist.
             self._cfg.raw["tip_bindings"] = dict(self._cfg.tip_bindings)
         if self._engine is not None:
-            # Sync bridge-owned bindings into the engine's config object
-            # so engine.save_config() writes the latest values.
-            try:
-                self._engine.cfg.bindings = dict(self._cfg.bindings)
-            except Exception:
-                pass
-            # 9-events: also sync tip_bindings so the engine picks them up.
+            # Sync bridge-owned tip_bindings into the engine's config object
             try:
                 self._engine.cfg.tip_bindings = dict(self._cfg.tip_bindings)
             except Exception:
                 pass
             if isinstance(getattr(self._engine.cfg, "raw", None), dict):
-                self._engine.cfg.raw["bindings"] = dict(self._cfg.bindings)
-                # 9-events: also sync tip_bindings into the raw dict (save
-                # serializes cfg.raw).
                 self._engine.cfg.raw["tip_bindings"] = dict(self._cfg.tip_bindings)
             self._engine.save_config()
             return

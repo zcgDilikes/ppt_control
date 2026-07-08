@@ -288,20 +288,60 @@ def test_process_emits_tip_touch_in_dual_mode():
     assert tip_events[0]["slot"] == "A"
 
 
-def test_process_no_tip_touch_in_single_mode_for_R_prefix():
-    """single 模式只产 L_*(slot A),即使给两手 landmarks 也只识别 A 槽"""
+def test_process_emits_tip_touch_in_single_mode():
+    """single 模式:左手拇指触食指 → L_HAND_INDEX(9 事件支持单人)"""
     from pc_gesture.semantics import GestureSemantics
     from pc_gesture.config import load_gesture_config
     cfg = load_gesture_config()
     cfg.raw["operator_mode"] = "single"
+    cfg.raw["dual_roles_swapped"] = False
     sem = GestureSemantics(cfg)
-    lm_a = _make_tip_hand((0.5, 0.2), (0.5, 0.2), wrist_xy=(0.3, 0.7))  # 左侧
-    lm_b = _make_tip_hand((0.5, 0.2), (0.5, 0.2), wrist_xy=(0.7, 0.7))  # 右侧
-    events = sem.process([lm_a, lm_b], [[], []])
+    lm = _make_tip_hand((0.5, 0.2), (0.5, 0.2), wrist_xy=(0.3, 0.7))  # 左手
+    events = sem.process([lm], [[]])
     tip_events = [e for e in events if e.get("type") == "tip_touch"]
-    # single 模式 _process_one_hand 只调 A 槽,所以即使有两手也只产 L_*
-    for e in tip_events:
-        assert e["gesture"].startswith("L_HAND_")
+    assert len(tip_events) == 1
+    assert tip_events[0]["gesture"] == "L_HAND_INDEX"
+
+
+def test_process_emits_tip_touch_for_either_hand_in_single():
+    """single 模式:用户用左手或右手都能识别(slot 由 x 决定)"""
+    from pc_gesture.semantics import GestureSemantics
+    from pc_gesture.config import load_gesture_config
+    cfg = load_gesture_config()
+    cfg.raw["operator_mode"] = "single"
+    cfg.raw["dual_roles_swapped"] = False
+    sem = GestureSemantics(cfg)
+
+    # 左手(wrist x=0.3) → L_HAND_INDEX
+    lm_left = _make_tip_hand((0.5, 0.2), (0.5, 0.2), wrist_xy=(0.3, 0.7))
+    events1 = sem.process([lm_left], [[]])
+    tip1 = [e for e in events1 if e.get("type") == "tip_touch"]
+    assert tip1[0]["gesture"] == "L_HAND_INDEX"
+
+    # 右手(wrist x=0.7) → R_HAND_INDEX
+    lm_right = _make_tip_hand((0.5, 0.2), (0.5, 0.2), wrist_xy=(0.7, 0.7))
+    events2 = sem.process([lm_right], [[]])
+    tip2 = [e for e in events2 if e.get("type") == "tip_touch"]
+    assert tip2[0]["gesture"] == "R_HAND_INDEX"
+
+
+def test_process_no_interlock_in_single_mode():
+    """single 模式:即使给两手 landmarks,interlock 也不产(需 dual 模式)"""
+    from pc_gesture.semantics import GestureSemantics
+    from pc_gesture.config import load_gesture_config
+    import time
+    cfg = load_gesture_config()
+    cfg.raw["operator_mode"] = "single"
+    cfg.raw["dual_roles_swapped"] = False
+    sem = GestureSemantics(cfg)
+    a, b = _make_two_hands_close()
+    # 1 帧设 dwell
+    sem.process([a, b], [[], []])
+    # 0.4s 后:interlock 还是不产(single 不产 interlock)
+    time.sleep(0.4)
+    events = sem.process([a, b], [[], []])
+    interlock_events = [e for e in events if e.get("type") == "interlock"]
+    assert interlock_events == []
 
 
 def test_process_tip_touch_cooldown_independent_from_static():
@@ -389,27 +429,26 @@ def test_bridge_routes_interlock_to_tip_binding():
     assert dispatcher.calls[0]["cmd"] == "EXIT"
 
 
-def test_bridge_routes_old_gesture_to_binding():
-    """7 旧 gesture 继续走 bindings(回归测试)"""
+def test_bridge_drops_old_gesture_type():
+    """7 旧 gesture 删除后,type=gesture 事件 silently drop(向后兼容)"""
     from ppt_core.gesture_bridge import GestureBridge
     dispatcher = _FakeDispatcher()
     bridge = GestureBridge(dispatcher=dispatcher, on_status=lambda t: None, on_fps=lambda f: None)
-    # 默认 OK 绑 NEXT_PAGE
+    # type=gesture 触发应被 silently drop
     bridge._on_gesture_event({
         "type": "gesture",
         "gesture": "OK",
         "slot": "A",
         "ts": 0.0, "ts_ms": 0,
     })
-    assert len(dispatcher.calls) == 1
-    assert dispatcher.calls[0]["cmd"] == "NEXT_PAGE"
+    assert len(dispatcher.calls) == 0
 
 
 # ---------------------------------------------------------------------------
-# Task 7: UI 9 个新 combo box + dual mode disable
+# Task 7: UI 9 个新 combo box(7 旧 gesture 已删,只剩 9 个)
 # ---------------------------------------------------------------------------
-def test_gesture_page_has_16_combos():
-    """UI 应该有 7 旧 combo + 9 新 combo = 16 个"""
+def test_gesture_page_has_9_combos():
+    """7 旧 gesture 删除后,UI 只剩 9 个 tip combo"""
     import os
     os.environ["QT_QPA_PLATFORM"] = "offscreen"
     from PySide6.QtWidgets import QApplication
@@ -417,19 +456,19 @@ def test_gesture_page_has_16_combos():
     app = QApplication.instance() or QApplication([])
     from ppt_core.gesture_bridge import GestureBridge
     bridge = GestureBridge(dispatcher=None, on_status=lambda t: None, on_fps=lambda f: None)
-    # dual 模式 → 9 个新 combo 全部 enable
-    bridge.cfg.raw["operator_mode"] = "dual"
     page = GesturePage(bridge=bridge)
-    # 7 旧 + 9 新
-    assert len(page._binding_combos) == 7
+    # 7 旧 gesture 已删,只剩 9 个 tip combo
+    assert hasattr(page, "_tip_combos")
     assert len(page._tip_combos) == 9
-    # dual 模式下 9 个新 combo 都 enable
+    # 不再 _binding_combos(7 旧 gesture 删除)
+    assert not hasattr(page, "_binding_combos") or len(getattr(page, "_binding_combos", {})) == 0
+    # 9 个新 combo 都 enable(dual mode disable 已删,9 事件支持双/单人)
     for combo in page._tip_combos:
         assert combo.isEnabled()
 
 
-def test_gesture_page_disables_tip_combos_in_single_mode():
-    """single 模式时 9 个新 combo 应该 disable(并 tooltip 提示)"""
+def test_gesture_page_9_combos_always_enabled():
+    """7 旧 gesture 删除后,9 个新 combo 不再被 dual mode 禁用(single 也可用)"""
     import os
     os.environ["QT_QPA_PLATFORM"] = "offscreen"
     from PySide6.QtWidgets import QApplication
@@ -437,11 +476,11 @@ def test_gesture_page_disables_tip_combos_in_single_mode():
     from ppt_core.gesture_bridge import GestureBridge
     app = QApplication.instance() or QApplication([])
     bridge = GestureBridge(dispatcher=None, on_status=lambda t: None, on_fps=lambda f: None)
+    # single 模式:9 个 combo 也应该 enable
     bridge.cfg.raw["operator_mode"] = "single"
     page = GesturePage(bridge=bridge)
     for combo in page._tip_combos:
-        assert not combo.isEnabled()
-        assert "双人模式" in combo.toolTip()
+        assert combo.isEnabled()
 
 
 # ---------------------------------------------------------------------------
@@ -540,9 +579,6 @@ def test_reload_config_resets_tip_interlock_cooldown():
     now = 1000.0  # arbitrary
     for slot in ("A", "B"):
         st = sem._slots[slot]
-        st.last_static_gesture = "FIST"
-        st.last_static_at = now
-        st.static_cooldown_until = now + 0.5
         st.last_tip_gesture = "L_HAND_INDEX"
         st.tip_cooldown_until = now + 0.4
         st.last_interlock_gesture = "HANDS_INTERLOCK"
@@ -559,9 +595,6 @@ def test_reload_config_resets_tip_interlock_cooldown():
     # All per-slot cooldowns + last_gesture fields must be reset.
     for slot in ("A", "B"):
         st = sem._slots[slot]
-        assert st.last_static_gesture == "NONE", f"slot {slot} last_static_gesture"
-        assert st.last_static_at == 0.0, f"slot {slot} last_static_at"
-        assert st.static_cooldown_until == 0.0, f"slot {slot} static_cooldown_until"
         assert st.last_tip_gesture == "NONE", f"slot {slot} last_tip_gesture"
         assert st.tip_cooldown_until == 0.0, f"slot {slot} tip_cooldown_until"
         assert st.last_interlock_gesture == "NONE", f"slot {slot} last_interlock_gesture"
