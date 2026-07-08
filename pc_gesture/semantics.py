@@ -134,39 +134,110 @@ class GestureSemantics:
         raw = _dist(lm[WRIST].x, lm[WRIST].y, lm[MIDDLE_MCP].x, lm[MIDDLE_MCP].y)
         return min(max(raw, 0.05), 0.5)
 
-    def _detect_tip_touches(self, lm, slot: str) -> str:
-        """9-events design spec 2026-07-07: 单手指尖触碰检测。
+    @staticmethod
+    def _finger_joint_angle_2d(lm, mcp_idx, pip_idx, tip_idx) -> float:
+        """方案 C:2D 关节角度(MCP→PIP→TIP 弯折角)。
 
-        拇指尖到 4 个指尖的归一化距离,选最近;距离 < tip_touch_ratio 触发。
+        完全伸直:~180°(π rad)
+        弯曲中:~135°(3π/4 rad)
+        完全卷曲:~90°(π/2 rad)
+
+        2D 角度对镜头方向仍敏感(手在 2D 图像里的弯折角可能与 3D 不同),
+        但与 Y 轴 / 2D 距离互为补充:3 特征投票时显著提升角度鲁棒性。
+        """
+        v1 = (lm[pip_idx].x - lm[mcp_idx].x, lm[pip_idx].y - lm[mcp_idx].y)
+        v2 = (lm[tip_idx].x - lm[pip_idx].x, lm[tip_idx].y - lm[pip_idx].y)
+        n1 = math.hypot(*v1)
+        n2 = math.hypot(*v2)
+        if n1 < 1e-6 or n2 < 1e-6:
+            return 0.0
+        cos_a = max(-1.0, min(1.0, (v1[0]*v2[0] + v1[1]*v2[1]) / (n1 * n2)))
+        return math.acos(cos_a)  # 弧度,0~π
+
+    @staticmethod
+    def _is_finger_extended_vote(lm, tip_idx, pip_idx, mcp_idx, dip_idx, size,
+                                 sens) -> bool:
+        """方案 C:多特征投票识别手指是否伸直。
+
+        3 个独立特征,各投 1 票,至少 2/3 通过才算伸直:
+        1. Y:tip.y < pip.y - 0.025(标准 Y 检查)
+        2. 2D:dist(tip, mcp) > 0.85*size(2D 距离兜底)
+        3. Joint:MCP→PIP→TIP 向量夹角 < π/2 ≈ 1.57 rad(伸直时接近 0°,卷曲接近 90°)
+
+        单手侧放/倾斜时,Y 通常误判,2D/关节角仍准;手腕在画面上方/下方时,
+        关节角仍准。3 特征互相补,跨角度鲁棒。
+        """
+        # vote 1: Y
+        y_pass = lm[tip_idx].y < lm[pip_idx].y - 0.025
+        # vote 2: 2D distance
+        try:
+            d_thr = float(sens.get("ext_2d_ratio", 0.5))
+        except (TypeError, ValueError):
+            d_thr = 0.85
+        d_pass = _dist(lm[tip_idx].x, lm[tip_idx].y, lm[mcp_idx].x, lm[mcp_idx].y) > d_thr * size
+        # vote 3: 2D joint angle(< π/2 ≈ 1.57 = extended;卷曲接近 90° = 1.57,完全折近 π=3.14)
+        try:
+            angle_thr = float(sens.get("ext_joint_angle_rad", 1.57))
+        except (TypeError, ValueError):
+            angle_thr = 1.57
+        angle = GestureSemantics._finger_joint_angle_2d(lm, mcp_idx, pip_idx, tip_idx)
+        angle_pass = angle < angle_thr
+        # 至少 2 票通过
+        return sum([y_pass, d_pass, angle_pass]) >= 2
+
+    def _detect_tip_touches(self, lm, slot: str) -> str:
+        """9-events design spec 2026-07-07: 单手指尖触碰检测 + 方案 C 3 特征投票。
+
+        步骤:
+        1. 拇指尖到 4 个指尖的归一化距离,选最近
+        2. 距离 < tip_touch_ratio 触发
+        3. 方案 C:目标手指必须「伸直」(3 特征投票 ≥2/3),防止:
+           - 手倾斜时拇指相对位置变化导致误触
+           - 弯曲手指尖偶然在视觉上接近拇指根
+
+        任意特征判弯曲则返回 NONE(就算距离够近也忽略)。
         返回 8 个 L/R_HAND_* 事件之一或 "NONE"。
-        9 事件支持单/双人模式:slot 由 x 决定,产 L_* 或 R_*。
         """
         if not lm or len(lm) < 21:
             return "NONE"
         try:
             size = self._hand_size(lm)
             threshold = float(self.cfg.sensitivity.get("tip_touch_ratio", 0.55))
+            sens = self.cfg.sensitivity
         except (TypeError, ValueError):
             return "NONE"
         thumb_tip = lm[THUMB_TIP]
         prefix = "L_HAND" if slot == "A" else "R_HAND"
+        # 候选(目标索引 / 关节 / MCP),方案 C 需要 mcp/dip 用于角度
         candidates = [
-            (f"{prefix}_INDEX",  lm[INDEX_TIP]),
-            (f"{prefix}_MIDDLE", lm[MIDDLE_TIP]),
-            (f"{prefix}_RING",   lm[RING_TIP]),
-            (f"{prefix}_PINKY",  lm[PINKY_TIP]),
+            (f"{prefix}_INDEX",  lm[INDEX_TIP],  INDEX_PIP,  INDEX_MCP,  INDEX_DIP),
+            (f"{prefix}_MIDDLE", lm[MIDDLE_TIP], MIDDLE_PIP, MIDDLE_MCP, MIDDLE_DIP),
+            (f"{prefix}_RING",   lm[RING_TIP],   RING_PIP,   RING_MCP,   RING_DIP),
+            (f"{prefix}_PINKY",  lm[PINKY_TIP],  PINKY_PIP,  PINKY_MCP,  PINKY_DIP),
         ]
         try:
             dists = [
-                (name, _dist(thumb_tip.x, thumb_tip.y, tip.x, tip.y) / size)
-                for name, tip in candidates
+                (name, tip, pip_idx, mcp_idx, dip_idx,
+                 _dist(thumb_tip.x, thumb_tip.y, tip.x, tip.y) / size)
+                for name, tip, pip_idx, mcp_idx, dip_idx in candidates
             ]
         except (TypeError, AttributeError):
             return "NONE"
-        name, d = min(dists, key=lambda x: x[1])
-        if d < threshold:
-            return name
-        return "NONE"
+        name, tip_pt, pip_idx, mcp_idx, dip_idx, d = min(dists, key=lambda x: x[5])
+        if d >= threshold:
+            return "NONE"
+        # 方案 C:3 特征投票验证目标手指「伸直」
+        # 拇指本身也算伸直(否则不算有效 9-event)
+        thumb_extended = self._is_finger_extended_vote(
+            lm, THUMB_TIP, THUMB_IP, THUMB_CMC, THUMB_MCP, size, sens,
+        )
+        # pip_idx 既是 PIP 的 index,也是该指尖的 TIP index(简化)
+        target_extended = self._is_finger_extended_vote(
+            lm, pip_idx, pip_idx, mcp_idx, dip_idx, size, sens,
+        )
+        if not (thumb_extended and target_extended):
+            return "NONE"
+        return name
 
     def _detect_interlock(self, lm_a, lm_b, now: float) -> bool:
         """9-events design spec 2026-07-07: 双手十指相扣检测(仅 dual 模式)。

@@ -107,6 +107,11 @@ def _make_tip_hand(thumb_xy, target_tip_xy, wrist_xy=(0.3, 0.7)):
         lm[pip_idx] = _P(0.5, 0.3)
     # 拇指尖
     lm[4] = _P(*thumb_xy)
+    # 拇指关节点(THUMB_CMC/MCP/IP,方案 C 关节角需要),模拟手自然放立
+    thumb_x = thumb_xy[0]
+    lm[1] = _P(thumb_x - 0.1, 0.55)   # THUMB_CMC(掌心侧)
+    lm[2] = _P(thumb_x - 0.05, 0.5)   # THUMB_MCP(比 CMC 远一点)
+    lm[3] = _P(thumb_x, 0.3)           # THUMB_IP(在 TIP 和 MCP 之间,模拟半伸)
     return lm
 
 
@@ -306,12 +311,12 @@ def test_process_emits_tip_touch_in_single_mode():
     assert tip_events[0]["gesture"] == "L_HAND_INDEX"
 
 
-def test_process_emits_tip_touch_for_either_hand_in_single():
-    """single 模式:用户用左手或右手都能识别(slot 由 x 决定)"""
+def test_process_emits_tip_touch_for_either_hand_in_dual():
+    """dual 模式:用户用左手或右手都能识别(slot 由 x 决定)"""
     from pc_gesture.semantics import GestureSemantics
     from pc_gesture.config import load_gesture_config
     cfg = load_gesture_config()
-    cfg.raw["operator_mode"] = "single"
+    cfg.raw["operator_mode"] = "dual"
     cfg.raw["dual_roles_swapped"] = False
     sem = GestureSemantics(cfg)
 

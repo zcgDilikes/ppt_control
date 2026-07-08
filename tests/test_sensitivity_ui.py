@@ -88,7 +88,7 @@ def test_spinbox_initial_values_match_defaults():
         "ext_relaxed_y": 0.015,
         "curl_y": 0.005,
         "ambiguous_y_tolerance": 0.005,
-        "ext_2d_ratio": 0.85,
+        "ext_2d_ratio": 0.5,
         "l_sign_thumb_extend_ratio": 0.30,
         "gesture_cooldown_ms": 400,
         "static_reset_idle_s": 0.3,

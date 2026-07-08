@@ -113,7 +113,9 @@ DEFAULT_GESTURE_CONFIG: Dict[str, Any] = {
         # 模糊判定:|tip.y - pip.y| < 此值 视为手侧放,启用 2D 距离判伸直。
         "ambiguous_y_tolerance": 0.005,
         # 2D 距离占手掌参考长度比例(伸直阈值,模糊时用)
-        "ext_2d_ratio": 0.85,
+        "ext_2d_ratio": 0.5,  # 方案 C:tip-to-MCP 距离阈值(占 size 比),< 此值 视为弯曲
+        # 方案 C:2D 关节角阈值(弧度)< 此值 视为伸直;卷曲时约 π/2 ≈ 1.57
+        "ext_joint_angle_rad": 1.57,
         # info.txt 二.3:L_SIGN 需要拇指明显横向伸出,不能只是「微伸」
         "l_sign_thumb_extend_ratio": 0.30,
     },
