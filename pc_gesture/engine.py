@@ -257,10 +257,7 @@ class GestureEngine:
                     hand_landmarks = []
                     handedness = []
 
-                # 配对是否确认、是否过期
-                ps = self._semantics.pairing_state
-
-                # 分类 + 派发
+                # 分类 + 派发(7→0 重构后 PairingService 已删,无 pairing_state 调用)
                 if not self.cfg.preview_only:
                     try:
                         events = self._semantics.process(hand_landmarks, handedness)
@@ -271,7 +268,7 @@ class GestureEngine:
                     for ev in events:
                         self._safe_dispatch(ev)
                 else:
-                    # 预览模式仍要更新配对倒计时
+                    # 预览模式仍要更新 interlock 状态(由 process() 内部维护)
                     self._semantics.process(hand_landmarks, handedness)
 
                 # 组装 FrameSnapshot 并推给 on_frame（如有订阅者）
