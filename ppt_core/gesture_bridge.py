@@ -76,6 +76,8 @@ class GestureBridge(QObject):
         # "source": str}. Entries are appended in ``_on_gesture_event`` and
         # consumed by ``recent_gestures()`` from the Qt thread.
         self._recent_gestures: Deque[Dict[str, object]] = deque(maxlen=_RECENT_GESTURE_LIMIT)
+        self._habits: deque = deque(maxlen=100)  # 最近 100 动作
+        self._habits_last_save: float = 0.0      # 上次落盘时间
         # Latest per-frame snapshot (cached for main-thread fallback polling).
         self._latest_snapshot: Optional[FrameSnapshot] = None
         # Teaching mode: when True, the bridge still recognizes gestures and
@@ -139,6 +141,7 @@ class GestureBridge(QObject):
                     print(f"[bridge] ✅ {gesture} → {action} → dispatch {payload}")
                 try:
                     self._dispatcher.dispatch(payload)
+                    self._record_action(payload.get("cmd"))  # 新增
                 except Exception as e:
                     # dispatch 失败应该始终打(罕见,可能是 bug)
                     print(f"[bridge] ❌ dispatch 失败: {e}")
@@ -272,3 +275,12 @@ class GestureBridge(QObject):
     def recent_gestures(self) -> list:
         """Snapshot of recently recognized gestures (oldest → newest)."""
         return list(self._recent_gestures)
+
+    def _record_action(self, action: str, ts: float | None = None) -> None:
+        """记录已派发的动作到 habits 缓冲(供 SmartTray 启动分析用)。
+
+        调 dispatch 后立即调一次,异步批量落盘。
+        """
+        if not action or action in {"NONE", None}:
+            return
+        self._habits.append((action, ts or time.time()))
