@@ -381,6 +381,15 @@ class GestureSemantics:
             min_confidence = 0.6
 
         slot_lms: Dict[str, list] = {}  # 9-events: 收集 per-slot 关键点给 interlock 用
+        # 多手模式:round-robin gating — slot C only "active" every 3rd frame.
+        # Per spec §3.4.4 (3-hand round-robin): on counter==0 slot C is
+        # allowed to dispatch; on counter!=0 it's collected for interlock
+        # only and tip_touch/laser/pinch are skipped.
+        if multi_mode == "3_hand_round_robin":
+            # counter is incremented above; spec says C active when 0.
+            active_extra = {"C"} if self._rr_frame_counter == 0 else set()
+        else:
+            active_extra = set()
         if hand_landmarks_list:
             for idx, lm_list in enumerate(hand_landmarks_list):
                 if not lm_list or len(lm_list) < 21:
@@ -403,6 +412,13 @@ class GestureSemantics:
                 slot_lms[slot] = lm_list
                 # 多手模式:person_id 跟随 slot(A=0,B=1,C=2)
                 st.person_id = 0 if slot == "A" else (1 if slot == "B" else 2)
+                # Round-robin gating: skip dispatch for slot C when its
+                # frame is not the active one. We still update
+                # ``last_seen_monotonic`` + ``active_slots`` so cleanup
+                # logic doesn't immediately evict the slot — the user's
+                # third hand is still visible, we just chose not to fire.
+                if slot not in ("A", "B") and slot not in active_extra:
+                    continue
                 events.extend(self._process_one_hand(lm_list, slot, st, sens, now))
 
         # 没出现在本帧的槽位:清理与该手相关的瞬时状态
