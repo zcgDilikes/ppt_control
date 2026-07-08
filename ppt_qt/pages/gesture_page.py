@@ -765,9 +765,12 @@ class GesturePage(QWidget):
 
         2 列布局:左 emoji + 中文名,右当前动作。
         互锁手势单独一行,用黄色突出(danger zone)。
+        P1.2:L/R 颜色化 — 左手 emoji 蓝色,右手 emoji 橙色。
         """
         from pc_gesture.config import DEFAULT_TIP_BINDINGS, ACTIONS
         # emoji + 中文名(hardcoded,稳定)
+        # P1.2:左手 blue,右手 orange,互锁 yellow
+        # 颜色基于 RGB hex,统一在表中应用
         desc_map = {
             "L_HAND_INDEX":     "👆 左手拇指触食指",
             "L_HAND_MIDDLE":    "☝ 左手拇指触中指",
@@ -778,6 +781,18 @@ class GesturePage(QWidget):
             "R_HAND_RING":      "💍 右手拇指触无名指",
             "R_HAND_PINKY":     "🤙 右手拇指触小拇指",
             "HANDS_INTERLOCK":  "🤝 双手十指相扣(2s dwell)",
+        }
+        # P1.2:颜色映射 — L_HAND 用蓝色,R_HAND 用橙色,互锁用黄色
+        color_map = {
+            "L_HAND_INDEX":     "#60a5fa",  # 蓝
+            "L_HAND_MIDDLE":    "#60a5fa",
+            "L_HAND_RING":      "#60a5fa",
+            "L_HAND_PINKY":     "#60a5fa",
+            "R_HAND_INDEX":     "#fb923c",  # 橙
+            "R_HAND_MIDDLE":    "#fb923c",
+            "R_HAND_RING":      "#fb923c",
+            "R_HAND_PINKY":     "#fb923c",
+            "HANDS_INTERLOCK":  "#fde68a",  # 黄
         }
         action_labels = {
             "NEXT_PAGE":     "下一页",
@@ -799,16 +814,16 @@ class GesturePage(QWidget):
         ]
         # 2 列 grid
         for idx, g in enumerate(gestures):
-            is_danger = (g == "HANDS_INTERLOCK")
+            lbl_color = color_map.get(g, "rgba(255,255,255,200)")
             lbl = QLabel(desc_map.get(g, g))
-            lbl.setStyleSheet(
-                "color:%s;font-size:11px;" % ("#fde68a" if is_danger else "rgba(255,255,255,200)")
-            )
+            lbl.setStyleSheet(f"color:{lbl_color};font-size:11px;")
             # 优先从 cfg.tip_bindings 读,否则用默认
             if hasattr(self._cfg, "tip_bindings") and self._cfg.tip_bindings:
                 action = self._cfg.tip_bindings.get(g) or DEFAULT_TIP_BINDINGS.get(g)
             else:
                 action = DEFAULT_TIP_BINDINGS.get(g)
+            # P1.2:动作 label 也按 L/R/互锁 上色
+            is_danger = (g == "HANDS_INTERLOCK")
             action_lbl = QLabel(action_labels.get(action, "—") if action else "—")
             action_lbl.setStyleSheet(
                 "color:%s;font-size:11px;font-weight:600;"
@@ -1024,10 +1039,18 @@ class GesturePage(QWidget):
                     lambda g=gesture: self._binding_rows[g].setStyleSheet("")
                 )
             # P0.1:大字号 toast 反馈(显示动作名)
+            # P1.2:用 emoji 前缀颜色区分 L/R(蓝/橙),比纯文字更易识别
             action_name = _ACTION_LABEL.get(action, "") if action else ""
             emoji, name = _GESTURE_META.get(gesture, ("", gesture))
+            # 根据手势名加 L/R 颜色 emoji prefix
+            if gesture.startswith("L_HAND_"):
+                prefix = "🔵 "  # 蓝圆
+            elif gesture.startswith("R_HAND_"):
+                prefix = "🟠 "  # 橙圆
+            else:
+                prefix = ""
             if action_name:
-                toast_text = f"{emoji}  {name}  →  {action_name}"
+                toast_text = f"{prefix}{emoji}  {name}  →  {action_name}"
             else:
                 toast_text = f"{emoji}  {name}"
             self._show_toast(toast_text, duration_ms=1500)

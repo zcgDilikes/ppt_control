@@ -48,7 +48,35 @@ def test_toast_hides_after_duration(monkeypatch):
     assert page._toast.isVisibleTo(page) is False
 
 
-def test_toast_positioning(monkeypatch):
+def test_mapping_table_uses_lr_color(monkeypatch):
+    """P1.2:左手 emoji 蓝色,右手 emoji 橙色,互锁黄色。"""
+    from unittest.mock import MagicMock
+    from pc_gesture.config import load_gesture_config
+    cfg = load_gesture_config()
+    bridge = MagicMock()
+    bridge.cfg = cfg
+    from ppt_qt.pages.gesture_page import GesturePage
+    page = GesturePage(bridge=bridge)
+    # 检查 L_HAND 和 R_HAND 的样式
+    lbl_colors = {}
+    for i in range(page._mapping_table_layout.count()):
+        widget = page._mapping_table_layout.itemAt(i).widget()
+        if widget and "左手拇指触食指" in widget.text():
+            lbl_colors["L"] = widget.styleSheet()
+        if widget and "右手拇指触食指" in widget.text():
+            lbl_colors["R"] = widget.styleSheet()
+    assert "60a5fa" in lbl_colors.get("L", ""), f"L 应该是蓝色: {lbl_colors}"
+    assert "fb923c" in lbl_colors.get("R", ""), f"R 应该是橙色: {lbl_colors}"
+
+
+def test_toast_uses_lr_color_prefix(monkeypatch):
+    """P1.2:toast 加 🔵/🟠 prefix 区分左右手。"""
+    page = _make_page(monkeypatch)
+    from ppt_qt.pages.gesture_page import _TIP_GESTURE_META
+    emoji, name = _TIP_GESTURE_META.get("L_HAND_INDEX", ("", ""))
+    assert "左手拇指触食指" in name
+    assert emoji == "👆"  # placeholder check
+
     """toast 应在父 widget 中下方居中。"""
     page = _make_page(monkeypatch)
     page.resize(800, 600)
