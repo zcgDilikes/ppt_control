@@ -36,7 +36,7 @@ def test_sensitivity_has_new_fields():
     assert s["tip_touch_ratio"] == 0.55
     assert s["interlock_max_wrist_dist"] == 0.20
     assert s["interlock_max_tip_dist"] == 0.40
-    assert s["interlock_min_dwell_s"] == 0.3
+    assert s["interlock_min_dwell_s"] == 2.0  # P0.2:调高到 2s 防误触
 
 
 def test_tip_bindings_attribute_round_trip():
@@ -222,6 +222,8 @@ def test_detect_interlock_two_hands_close():
     from pc_gesture.config import load_gesture_config
     sem = GestureSemantics(load_gesture_config())
     a, b = _make_two_hands_close()
+    # P0.2:默认 dwell 改成 2.0s,测试里临时调低
+    sem.cfg.sensitivity["interlock_min_dwell_s"] = 0.3
     # 第一次调用,设 _interlock_start
     assert sem._detect_interlock(a, b, time.monotonic()) is False
     # 持续 0.3s 后再调 → True
@@ -244,6 +246,7 @@ def test_detect_interlock_dwell_time():
     from pc_gesture.semantics import GestureSemantics
     from pc_gesture.config import load_gesture_config
     sem = GestureSemantics(load_gesture_config())
+    sem.cfg.sensitivity["interlock_min_dwell_s"] = 0.3  # P0.2 默认 2s,测试里临时调低
     a, b = _make_two_hands_close()
     # 第一次调用,设 start;0.1s 内调,dwell 未到 → False
     t0 = time.monotonic()
@@ -372,6 +375,7 @@ def test_process_emits_interlock_event():
     cfg = load_gesture_config()
     cfg.raw["operator_mode"] = "dual"
     cfg.raw["dual_roles_swapped"] = False  # 测试要确认 slot A,需把互换关掉
+    cfg.raw["sensitivity"]["interlock_min_dwell_s"] = 0.3  # P0.2 默认 2s,测试临时调低
     sem = GestureSemantics(cfg)
     a, b = _make_two_hands_close()
     # 第 1 帧:初始化 dwell

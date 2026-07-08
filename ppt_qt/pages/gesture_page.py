@@ -144,6 +144,13 @@ class GesturePage(QWidget):
         self._frame_poll_timer.timeout.connect(self._poll_latest_snapshot)
         self._frame_poll_timer.start()
 
+        # ---- P0.2:互锁进度条 overlay(双手互锁 dwell 时显示) ----
+        # 必须先创建 QTimer 再 .start(),所以放在 .start() 前面
+        self._interlock_timer = QTimer(self)
+        self._interlock_timer.setInterval(100)
+        self._interlock_timer.timeout.connect(self._update_interlock_progress)
+        self._interlock_timer.start()
+
         # ---- 9-event: 构造完成后立即应用 operator_mode 状态(单/双人) ----
         self._refresh_tip_combos_enabled()
 
@@ -162,6 +169,20 @@ class GesturePage(QWidget):
         self._toast_timer = QTimer(self)
         self._toast_timer.setSingleShot(True)
         self._toast_timer.timeout.connect(self._toast.hide)
+
+        # ---- P0.2:互锁进度条 overlay(双手互锁 dwell 时显示) ----
+        # 比 toast 更宽,带进度条,允许取消
+        self._interlock_progress = QLabel(self)
+        self._interlock_progress.setAlignment(Qt.AlignCenter)
+        self._interlock_progress.setStyleSheet(
+            "background:rgba(234,179,8,0.95);color:#1f2937;"
+            "font-size:16px;font-weight:600;padding:16px 32px;"
+            "border-radius:12px;"
+        )
+        self._interlock_progress.setVisible(False)
+        self._interlock_progress.setMinimumWidth(360)
+        self._interlock_progress.setAttribute(Qt.WA_TransparentForMouseEvents)
+
         # resizeEvent 重定位 toast(浮动在父 widget 中下方)
         self.resizeEvent = self._make_resize_event(self.resizeEvent)
 
@@ -192,6 +213,44 @@ class GesturePage(QWidget):
         self._toast.raise_()
         self._toast.show()
         self._toast_timer.start(duration_ms)
+
+    def _update_interlock_progress(self) -> None:
+        """P0.2:每 100ms 轮询 interlock 进度,显示进度条 overlay。
+
+        双手互锁进入 dwell 时显示「🤝 互锁中... 1.2s / 2.0s」,
+        用户拆开双手时立即消失(取消)。
+        """
+        if not hasattr(self, "_interlock_progress"):
+            return
+        sem = getattr(self._bridge, "_semantics", None)
+        if sem is None:
+            self._interlock_progress.setVisible(False)
+            self._interlock_timer.stop()
+            return
+        now = time.monotonic()
+        progress = sem.interlock_progress(now)
+        if progress <= 0.0:
+            self._interlock_progress.setVisible(False)
+            return
+        try:
+            dwell = float(self._cfg.sensitivity.get("interlock_min_dwell_s", 2.0))
+        except (TypeError, ValueError):
+            dwell = 2.0
+        elapsed = progress * dwell
+        # 简易文本进度条(用 ▏▎▍▌▋▊▉█ 字符)
+        bar_len = 16
+        filled = int(progress * bar_len)
+        bar = "█" * filled + "░" * (bar_len - filled)
+        text = f"🤝 互锁中  {elapsed:.1f}s / {dwell:.1f}s  {bar}  拆开取消"
+        self._interlock_progress.setText(text)
+        self._interlock_progress.adjustSize()
+        w = self._interlock_progress.sizeHint().width()
+        h = self._interlock_progress.sizeHint().height()
+        x = (self.width() - w) // 2
+        y = int(self.height() * 0.55)
+        self._interlock_progress.setGeometry(x, y, w, h)
+        self._interlock_progress.raise_()
+        self._interlock_progress.show()
 
     # ----- 私有：构建左右两栏 -----
     def _build_left_column(self) -> QFrame:

@@ -17,7 +17,7 @@ def test_all_new_sensitivity_defaults_present():
     assert s["tip_touch_ratio"] == 0.55
     assert s["interlock_max_wrist_dist"] == 0.20
     assert s["interlock_max_tip_dist"] == 0.40
-    assert s["interlock_min_dwell_s"] == 0.3
+    assert s["interlock_min_dwell_s"] == 2.0  # P0.2:调高到 2s 防误触
     # 公共配置
     assert s["low_confidence_threshold"] == 0.6
     assert s["hand_lost_cleanup_s"] == 0.5

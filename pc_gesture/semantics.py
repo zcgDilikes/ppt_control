@@ -206,6 +206,22 @@ class GestureSemantics:
             return False
         return (now - self._interlock_start) >= dwell
 
+    def interlock_progress(self, now: float) -> float:
+        """P0.2:返回当前 interlock 进度 0-1(用于 UI 进度条)。
+
+        - 0 表示刚刚开始,双手还没进入互锁距离
+        - < 1 表示在 dwell 中(UI 应显示进度条)
+        - 1 表示完成,UI 可触发确认
+        """
+        if self._interlock_start is None:
+            return 0.0
+        try:
+            dwell = float(self.cfg.sensitivity.get("interlock_min_dwell_s", 2.0))
+        except (TypeError, ValueError):
+            dwell = 2.0
+        elapsed = now - self._interlock_start
+        return min(1.0, max(0.0, elapsed / dwell))
+
     # ------------------------------------------------------------------
     # 槽位分配(基于 wrist x)
     # ------------------------------------------------------------------

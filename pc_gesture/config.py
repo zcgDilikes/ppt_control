@@ -107,8 +107,8 @@ DEFAULT_GESTURE_CONFIG: Dict[str, Any] = {
         "interlock_max_wrist_dist": 0.20,
         # 双手 interlock:10 指尖两两均值距离上限(归一化)
         "interlock_max_tip_dist": 0.40,
-        # 双手 interlock:最小持续秒数(防误触)
-        "interlock_min_dwell_s": 0.3,
+        # 双手 interlock:最小持续秒数(P0.2 调高到 2s,防误触高风险动作)
+        "interlock_min_dwell_s": 2.0,
         # info.txt 二.1:Y 模糊时(hand sideways),2D 距离作为伸直兜底。
         # 模糊判定:|tip.y - pip.y| < 此值 视为手侧放,启用 2D 距离判伸直。
         "ambiguous_y_tolerance": 0.005,
