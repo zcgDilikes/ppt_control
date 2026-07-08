@@ -332,10 +332,7 @@ class GesturePage(QWidget):
         # 控制按钮
         ctrl = QHBoxLayout()
         ctrl.setSpacing(6)
-        b_tutorial = QPushButton("重看教学")
-        b_tutorial.setObjectName("SecondaryButton")
-        b_tutorial.clicked.connect(self._on_show_tutorial)
-        ctrl.addWidget(b_tutorial)
+        # 7 旧 gesture 删除后,tutorial_dialog 已删,"重看教学"按钮移除
         b_start = QPushButton("启动手势")
         b_start.setObjectName("PrimaryButton")
         b_start.clicked.connect(lambda: self._bridge.start())
@@ -624,25 +621,9 @@ class GesturePage(QWidget):
         self._trial_now.setText(_GESTURE_NAME.get(g, g))
         self._trial_now.setStyleSheet("color:#22c55e;font-size:14px;font-weight:600;")
 
-    # ----- 私有：教程/生命周期 -----
-    def showEvent(self, ev):
-        super().showEvent(ev)
-        QTimer.singleShot(50, self._maybe_show_tutorial)
-
-    def _maybe_show_tutorial(self):
-        if self._cfg.tutorial_done:
-            return
-        eng = self._bridge.engine
-        if eng is None:
-            return
-        from ppt_qt.pages.gesture_tutorial_dialog import GestureTutorialDialog
-        dlg = GestureTutorialDialog(bridge=self._bridge, parent=self)
-        dlg.exec()
-
-    def _on_show_tutorial(self):
-        from ppt_qt.pages.gesture_tutorial_dialog import GestureTutorialDialog
-        dlg = GestureTutorialDialog(bridge=self._bridge, parent=self)
-        dlg.exec()
+    # ----- 私有：生命周期 -----
+    # 7 旧 gesture 删除后,tutorial_dialog 已删(9 事件无对应 7 步教学)。
+    # showEvent 保留给未来扩展。
 
     # ----- 私有：业务逻辑(保持原样) -----
     def _on_teaching_toggled(self, on: bool) -> None:
