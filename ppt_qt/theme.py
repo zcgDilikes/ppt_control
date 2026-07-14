@@ -24,7 +24,10 @@ def paint_sunset_background(painter: QPainter, rect: QRect) -> None:
 
 
 GLOBAL_QSS = """
-QMainWindow { background: transparent; }
+QMainWindow { background: transparent; color: #ffffff; }
+QMainWindow::status-bar { background: #0f172a; color: rgba(255, 255, 255, 200); }
+QStatusBar { background: #0f172a; color: rgba(255, 255, 255, 200); padding: 2px 8px; }
+QStatusBar::item { background: transparent; }
 QWidget#Sidebar {
     background: rgba(20, 20, 30, 200);
     border-right: 1px solid rgba(255, 255, 255, 30);
@@ -89,5 +92,4 @@ QListWidget {
     padding: 4px;
 }
 QListWidget::item:selected { background: rgba(255, 110, 127, 100); }
-QStatusBar { background: transparent; color: rgba(255, 255, 255, 180); }
 """

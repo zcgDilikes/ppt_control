@@ -4,9 +4,11 @@ import os
 import subprocess
 import sys
 import json
+
 from PySide6.QtWidgets import QApplication, QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QStackedWidget, QSystemTrayIcon, QMenu, QMessageBox
 from PySide6.QtCore import Qt, QSize, QTimer, QObject, Signal
 from PySide6.QtGui import QAction, QIcon, QPainter, QColor, QPixmap
+from fusion import Fusion
 
 from ppt_core.settings import DEFAULT_SETTINGS, load_settings, save_settings
 from ppt_core.room import load_or_create_room_id
@@ -67,6 +69,10 @@ class PptQtApp(QObject):
         # Build the QApplication first; main window construction references
         # ``self._gesture_page`` which is initialised in ``_build_main_window``.
         self._app = QApplication.instance() or QApplication(sys.argv)
+        # 让 Qt 自己画标题栏/菜单栏/滚动条(覆盖 OS 原生色),
+        # 标题栏/菜单栏跟主背景一致,深色 #0f172a
+        self._app.setStyle("Fusion")
+        self._app.setPalette(self._build_dark_palette())
         self._app.setStyleSheet(GLOBAL_QSS)
 
         # GestureBridge needs ``self._gesture_page`` callbacks, but its public
@@ -227,6 +233,24 @@ class PptQtApp(QObject):
         except Exception:
             pass
 
+    def _build_dark_palette(self):
+        from PySide6.QtGui import QPalette
+        pal = QPalette()
+        # 基础深色背景
+        pal.setColor(QPalette.Window, QColor("#0f172a"))
+        pal.setColor(QPalette.WindowText, QColor("#f1f5f9"))
+        pal.setColor(QPalette.Base, QColor("#1e293b"))
+        pal.setColor(QPalette.AlternateBase, QColor("#334155"))
+        pal.setColor(QPalette.ToolTipBase, QColor("#0f172a"))
+        pal.setColor(QPalette.ToolTipText, QColor("#f1f5f9"))
+        pal.setColor(QPalette.Text, QColor("#f1f5f9"))
+        pal.setColor(QPalette.Button, QColor("#334155"))
+        pal.setColor(QPalette.ButtonText, QColor("#f1f5f9"))
+        pal.setColor(QPalette.BrightText, QColor("#ffffff"))
+        pal.setColor(QPalette.Link, QColor("#38bdf8"))
+        pal.setColor(QPalette.Highlight, QColor("#38bdf8"))
+        pal.setColor(QPalette.HighlightedText, QColor("#0f172a"))
+        return pal
     def _setup_tray(self):
         if not QSystemTrayIcon.isSystemTrayAvailable():
             return

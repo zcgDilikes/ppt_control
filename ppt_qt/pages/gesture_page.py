@@ -397,19 +397,19 @@ class GesturePage(QWidget):
 
         # P1.1:9-event 手势-动作对照表(紧凑,2 列)
         # 比之前 cheat card 信息密度高,只显示 emoji+动作,藏到可折叠区
-        table_title = QLabel("📖 手势速查")
-        table_title.setStyleSheet("color:#ffffff;font-size:13px;font-weight:600;")
-        cl.addWidget(table_title)
-        self._mapping_table_toggle = QCheckBox("显示对照表")
-        self._mapping_table_toggle.setChecked(True)  # 默认展开
-        self._mapping_table_toggle.toggled.connect(self._on_mapping_table_toggle)
-        cl.addWidget(self._mapping_table_toggle)
-        self._mapping_table = QWidget()
-        self._mapping_table_layout = QGridLayout(self._mapping_table)
-        self._mapping_table_layout.setContentsMargins(0, 0, 0, 0)
-        self._mapping_table_layout.setSpacing(4)
-        cl.addWidget(self._mapping_table)
-        self._populate_mapping_table()
+        # table_title = QLabel("📖 手势速查")
+        # table_title.setStyleSheet("color:#ffffff;font-size:13px;font-weight:600;")
+        # cl.addWidget(table_title)
+        # self._mapping_table_toggle = QCheckBox("显示对照表")
+        # self._mapping_table_toggle.setChecked(True)  # 默认展开
+        # self._mapping_table_toggle.toggled.connect(self._on_mapping_table_toggle)
+        # cl.addWidget(self._mapping_table_toggle)
+        # self._mapping_table = QWidget()
+        # self._mapping_table_layout = QGridLayout(self._mapping_table)
+        # self._mapping_table_layout.setContentsMargins(0, 0, 0, 0)
+        # self._mapping_table_layout.setSpacing(4)
+        # cl.addWidget(self._mapping_table)
+        # self._populate_mapping_table()
 
         # ① 手势映射(去掉原 cheat card,节省页面空间)
         title1 = QLabel("① 手势映射")
@@ -705,13 +705,8 @@ class GesturePage(QWidget):
         if snap is None or not snap.hands:
             self._overlay_status.setText("🟡 未识别到手")
             self._overlay_hand.setText("手位置: —")
-            # 清手指灯
-            for key, (light, st) in self._finger_lights.items():
-                if self._finger_state_prev.get(key) is not None:
-                    light.setText("○")
-                    light.setStyleSheet("color:#6b7280;font-size:14px;")
-                    st.setText("卷曲")
-                    self._finger_state_prev[key] = None
+            # 清手指状态 prev(UI 上的灯 widget 已删,保留缓存备将来 overlay 用)
+            self._finger_state_prev = {}
             return
 
         hand = max(snap.hands, key=lambda h: h.confidence)
@@ -756,20 +751,8 @@ class GesturePage(QWidget):
             self._overlay_gesture.hide()
         self._overlay_gesture.raise_()
 
-        # 手指状态变化(只在变化时更新,30fps × 5 灯 = 150 ops/秒)
-        for key, (light, st) in self._finger_lights.items():
-            cur = bool(hand.finger_states.get(key, False))
-            prev = self._finger_state_prev.get(key)
-            if cur != prev:
-                if cur:
-                    light.setText("●")
-                    light.setStyleSheet("color:#22c55e;font-size:14px;")
-                    st.setText("伸直")
-                else:
-                    light.setText("○")
-                    light.setStyleSheet("color:#6b7280;font-size:14px;")
-                    st.setText("卷曲")
-                self._finger_state_prev[key] = cur
+        # 手指状态 prev 清空(原 5 灯 widget 已删,保留缓存备将来 overlay 用)
+        # 因为我们删了 _finger_lights,这里不再迭代该 dict
         self._last_hand_seen_at = time.time()
 
 

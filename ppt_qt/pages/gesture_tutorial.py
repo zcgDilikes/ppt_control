@@ -42,6 +42,19 @@ class GestureTutorialDialog(QDialog):
         self.setWindowTitle("9-event 交互教程")
         self.setModal(True)
         self.resize(640, 540)
+        # 深色背景 + 默认文字色,避免与 GLOBAL_QSS 的浅色冲突
+        # P2.1 配色统一:深蓝底 + 浅字,与主窗口一致
+        self.setStyleSheet("""
+            QDialog, QFrame, QWidget { background: #0f172a; color: #e2e8f0; }
+            QCheckBox { color: #cbd5e1; spacing: 6px; }
+            QCheckBox::indicator { width: 16px; height: 16px; }
+            QScrollArea, QScrollBar { background: #0f172a; }
+            QPushButton { background: #1e293b; color: #e2e8f0;
+                           border: 1px solid #334155; border-radius: 4px;
+                           padding: 4px 12px; }
+            QPushButton:hover { background: #334155; }
+            QPushButton:pressed { background: #1e40af; }
+        """)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(20, 20, 20, 20)
