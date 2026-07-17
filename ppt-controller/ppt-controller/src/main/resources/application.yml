@@ -1,0 +1,41 @@
+# 通用配置（所有环境都生效）
+spring:
+    application:
+        name: ppt-controller
+    servlet:
+        multipart:
+            max-file-size: 100MB
+            max-request-size: 100MB
+
+server:
+    port: 8088
+    tomcat:
+        max-http-form-post-size: 100MB
+        max-swallow-size: 100MB
+        connection-timeout: 60000
+        max-connections: 200
+        accept-count: 50
+        threads:
+            max: 50
+            min-spare: 5
+    servlet:
+        resources:
+            cache:
+                max-size: 1104857600
+                ttl: 300
+                period: 180
+
+file:
+    storage:
+        path: /data/ppt/upload/
+
+# ------------------- 下面是 test 环境配置 -------------------
+# 测试时自动激活，不会影响正常运行
+---
+spring:
+    config:
+        activate:
+            on-profile: test  # 标记这是 test 环境
+
+server:
+    port: -1  # 测试时不占用端口

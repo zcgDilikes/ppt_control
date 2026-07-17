@@ -1,0 +1,13 @@
+# PC 端手势控制（ppt_pc_client.py）
+mediapipe>=0.10.14
+opencv-python>=4.8.0
+numpy>=1.24.0
+# 原有依赖（若尚未安装）
+websockets
+pyautogui
+pynput
+pyperclip
+requests
+qrcode
+pillow
+pystray
