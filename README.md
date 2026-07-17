@@ -5,6 +5,8 @@
 <img width="1080" height="2340" alt="微信图片_20260704170317_8_70" src="https://github.com/user-attachments/assets/0a7ab8e1-cc98-4988-82d4-bd0b42bb7fce" />
 <img width="1080" height="2340" alt="微信图片_20260704170316_7_70" src="https://github.com/user-attachments/assets/660459b5-950b-40ac-ac71-0aeba2b0b48c" />
 <img width="1080" height="2340" alt="微信图片_20260717140202_10_70" src="https://github.com/user-attachments/assets/148edc09-532d-4a72-94a0-03d5aad1a429" />
+## 🎬 演示视频
+[![演示视频封面](https://www.bilibili.com/video/BV1yQDNBSEdc/?vd_source=5aa815785c609c2adbb9e3e350d3ca60)
 
 # PPT 遥控
 
