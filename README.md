@@ -4,6 +4,7 @@
 <img width="782" height="812" alt="ScreenShot_2026-07-14_162806_318" src="https://github.com/user-attachments/assets/3a8cd6ac-ce83-4c94-9779-9ce6b62ca8b5" />
 <img width="1080" height="2340" alt="微信图片_20260704170317_8_70" src="https://github.com/user-attachments/assets/0a7ab8e1-cc98-4988-82d4-bd0b42bb7fce" />
 <img width="1080" height="2340" alt="微信图片_20260704170316_7_70" src="https://github.com/user-attachments/assets/660459b5-950b-40ac-ac71-0aeba2b0b48c" />
+<img width="1080" height="2340" alt="微信图片_20260717140202_10_70" src="https://github.com/user-attachments/assets/148edc09-532d-4a72-94a0-03d5aad1a429" />
 
 # PPT 遥控
 
